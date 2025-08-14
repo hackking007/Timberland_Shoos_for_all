@@ -9,7 +9,10 @@ def send_telegram_message(text, chat_id=None):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     target_chat = chat_id or ADMIN_CHAT_ID
     payload = {"chat_id": target_chat, "text": text, "parse_mode": "Markdown"}
-    requests.post(url, data=payload)
+    try:
+        requests.post(url, data=payload, timeout=30)
+    except Exception:
+        pass
 
 def send_photo_with_caption(image_url, caption, chat_id=None):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendPhoto"
@@ -18,9 +21,12 @@ def send_photo_with_caption(image_url, caption, chat_id=None):
         "chat_id": target_chat,
         "photo": image_url,
         "caption": caption,
-        "parse_mode": "Markdown"
+        "parse_mode": "Markdown",
     }
-    requests.post(url, data=payload)
+    try:
+        requests.post(url, data=payload, timeout=30)
+    except Exception:
+        pass
 
 def load_previous_state():
     try:
@@ -28,16 +34,23 @@ def load_previous_state():
             return json.load(f)
     except FileNotFoundError:
         return {}
+    except Exception:
+        return {}
 
 def save_current_state(state):
-    with open(STATE_FILE, "w", encoding="utf-8") as f:
-        json.dump(state, f, ensure_ascii=False, indent=2)
+    try:
+        with open(STATE_FILE, "w", encoding="utf-8") as f:
+            json.dump(state, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
 
 def load_user_preferences():
     try:
         with open(USER_DATA_FILE, "r", encoding="utf-8") as f:
             return json.load(f)
     except FileNotFoundError:
+        return {}
+    except Exception:
         return {}
 
 def load_size_mapping():
@@ -48,27 +61,33 @@ def load_size_mapping():
         return {
             "men": {"40": 791, "41": 792, "42": 793, "43": 794, "44": 795, "45": 796},
             "women": {"36": 798, "37": 799, "38": 800, "39": 801, "40": 802, "41": 803},
-            "kids": {"28": 230, "29": 231, "30": 232, "31": 233, "32": 234, "33": 235, "34": 236, "35": 237}
+            "kids": {
+                "28": 230, "29": 231, "30": 232, "31": 233, "32": 234,
+                "33": 235, "34": 236, "35": 237
+            },
         }
+    except Exception:
+        return {}
 
 def size_to_code(size, category):
     size_mapping = load_size_mapping()
-    return str(size_mapping.get(category, {}).get(size, ""))
+    return str(size_mapping.get(category, {}).get(str(size), ""))
 
 def category_to_url(category, size, price):
     if category not in CATEGORIES:
         return None
-    
     base_url = CATEGORIES[category]["url"]
     size_code = size_to_code(size, category)
     if not size_code:
         return None
-    return f"{base_url}?price={price.replace('-', '_')}&size={size_code}&product_list_order=low_to_high"
+    # price format expected like "0-300" -> convert to "0_300"
+    price_param = str(price).replace("-", "_")
+    return f"{base_url}?price={price_param}&size={size_code}&product_list_order=low_to_high"
 
 def check_shoes():
     if ENABLE_DEBUG_LOGS:
         print(f"[{__import__('datetime').datetime.now()}] Starting shoe check...")
-    
+
     previous_state = load_previous_state()
     current_state = {}
     user_data = load_user_preferences()
@@ -79,7 +98,7 @@ def check_shoes():
         if ENABLE_ADMIN_NOTIFICATIONS:
             send_telegram_message("⚠️ אין משתמשים רשומים.")
         return
-    
+
     if ENABLE_DEBUG_LOGS:
         print(f"Found {len(user_data)} registered users.")
 
@@ -90,9 +109,12 @@ def check_shoes():
 
         url = category_to_url(category, size, price)
 
-        # שליחת URL לבדיקה (רק למפתח)
+        # שליחת URL לבדיקה (רק למפתח/אדמין)
         if ENABLE_ADMIN_NOTIFICATIONS:
-            debug_msg = f"🔍 *בודק למשתמש:* `{user_id}`\nקטגוריה: {category} | מידה: {size} | טווח: {price}\n\n{url}"
+            debug_msg = (
+                f"🔍 *בודק למשתמש:* `{user_id}`\n"
+                f"קטגוריה: {category} | מידה: {size} | טווח: {price}\n\n{url}"
+            )
             send_telegram_message(debug_msg)
         if ENABLE_DEBUG_LOGS:
             print(f"Checking for user {user_id}: {category}, size {size}, price {price}")
@@ -106,14 +128,14 @@ def check_shoes():
 
         try:
             with sync_playwright() as p:
-                        if ENABLE_DEBUG_LOGS:
+                if ENABLE_DEBUG_LOGS:
                     print(f"Launching browser for user {user_id}...")
                 browser = p.chromium.launch(headless=True)
-                context = browser.new_context(locale='he-IL')
+                context = browser.new_context(locale="he-IL")
                 page = context.new_page()
                 page.goto(url, timeout=SCAN_TIMEOUT)
 
-                # טעינת כל המוצרים
+                # טעינת כל המוצרים (לחיצות על "עוד")
                 products_loaded = 0
                 while True:
                     try:
@@ -131,8 +153,8 @@ def check_shoes():
                             print(f"Error loading more products: {str(e)}")
                         break
 
-                soup = BeautifulSoup(page.content(), 'html.parser')
-                product_cards = soup.select('div.product')
+                soup = BeautifulSoup(page.content(), "html.parser")
+                product_cards = soup.select("div.product")
                 if ENABLE_DEBUG_LOGS:
                     print(f"Found {len(product_cards)} products for user {user_id}")
 
@@ -142,22 +164,32 @@ def check_shoes():
                     img_tag = card.select_one("img")
                     price_tags = card.select("span.price")
 
-                    title = img_tag['alt'].strip() if img_tag and img_tag.has_attr('alt') else "ללא שם"
-                    link = link_tag['href'] if link_tag and link_tag.has_attr('href') else None
+                    title = (
+                        img_tag["alt"].strip()
+                        if img_tag and img_tag.has_attr("alt")
+                        else "ללא שם"
+                    )
+                    link = link_tag["href"] if link_tag and link_tag.has_attr("href") else None
                     if not link:
                         continue
                     if not link.startswith("http"):
                         link = "https://www.timberland.co.il" + link
 
-                    img_url = img_tag['src'] if img_tag and img_tag.has_attr('src') else None
+                    img_url = img_tag["src"] if img_tag and img_tag.has_attr("src") else None
+
                     prices = []
                     for tag in price_tags:
                         try:
-                            text = tag.text.strip().replace('\xa0', '').replace('₪', '').replace(',', '')
+                            text = (
+                                tag.text.strip()
+                                .replace("\xa0", "")
+                                .replace("₪", "")
+                                .replace(",", "")
+                            )
                             price_val = float(text)
                             if price_val > 0:
                                 prices.append(price_val)
-                        except:
+                        except Exception:
                             continue
 
                     if not prices:
@@ -166,27 +198,36 @@ def check_shoes():
                     price_val = min(prices)
                     key = f"{user_id}_{link}"
                     current_state[key] = {
-                        "title": title, "link": link,
-                        "price": price_val, "img_url": img_url
+                        "title": title,
+                        "link": link,
+                        "price": price_val,
+                        "img_url": img_url,
                     }
 
                     if key not in previous_state:
                         caption = f"*{title}* - ₪{price_val}\n[לינק למוצר]({link})"
                         try:
-                            send_photo_with_caption(img_url or "https://via.placeholder.com/300", caption, user_id)
+                            send_photo_with_caption(
+                                img_url or "https://via.placeholder.com/300",
+                                caption,
+                                user_id,
+                            )
                             if ENABLE_DEBUG_LOGS:
-                            print(f"Sent new product alert to user {user_id}: {title}")
+                                print(f"Sent new product alert to user {user_id}: {title}")
                             new_products += 1
                         except Exception as e:
                             if ENABLE_DEBUG_LOGS:
-                            print(f"Failed to send message to user {user_id}: {str(e)}")
-                
+                                print(
+                                    f"Failed to send message to user {user_id}: {str(e)}"
+                                )
+
                 if ENABLE_DEBUG_LOGS:
                     print(f"Sent {new_products} new product alerts to user {user_id}")
 
-                    browser.close()
-                    if ENABLE_DEBUG_LOGS:
-                        print(f"Completed scan for user {user_id}")
+                browser.close()
+                if ENABLE_DEBUG_LOGS:
+                    print(f"Completed scan for user {user_id}")
+
         except Exception as e:
             if ENABLE_DEBUG_LOGS:
                 print(f"Error scanning for user {user_id}: {str(e)}")
@@ -194,7 +235,10 @@ def check_shoes():
 
     save_current_state(current_state)
     if ENABLE_DEBUG_LOGS:
-        print(f"[{__import__('datetime').datetime.now()}] Shoe check completed. Found {len(current_state)} total products.")
+        print(
+            f"[{__import__('datetime').datetime.now()}] Shoe check completed. "
+            f"Found {len(current_state)} total products."
+        )
 
 if __name__ == "__main__":
     try:
