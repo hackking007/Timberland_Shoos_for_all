@@ -1,21 +1,23 @@
 # הגדרות הבוט
 import os
 
-# הגדרות טלגרם
-TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
-ADMIN_CHAT_ID = os.environ.get("CHAT_ID")  # אופציונלי - לקבלת הודעות מנהל
+# --- טלגרם ---
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "").strip()  # חובה
+# תמיכה גם ב-ADMIN_CHAT_ID וגם ב-CHAT_ID (לא חובה)
+_admin_env = os.getenv("ADMIN_CHAT_ID", "").strip() or os.getenv("CHAT_ID", "").strip()
+ADMIN_CHAT_ID = int(_admin_env) if _admin_env.isdigit() else None
 
-# הגדרות סריקה
-SCAN_TIMEOUT = 60000  # זמן המתנה לטעינת עמוד (מילישניות)
-MAX_LOAD_MORE_CLICKS = 10  # מקסימום לחיצות על "טען עוד"
-LOAD_MORE_DELAY = 1500  # השהיה בין לחיצות (מילישניות)
+# --- סריקה ---
+SCAN_TIMEOUT = 60000           # ms (Playwright עובד במילישניות)
+MAX_LOAD_MORE_CLICKS = 10
+LOAD_MORE_DELAY = 1500         # ms
 
-# קבצי נתונים
+# --- קבצים ---
 USER_DATA_FILE = "user_data.json"
 STATE_FILE = "shoes_state.json"
 SIZE_MAP_FILE = "size_map.json"
 
-# הגדרות מידות וקטגוריות
+# --- קטגוריות ---
 CATEGORIES = {
     "men": {
         "name": "גברים",
@@ -23,18 +25,18 @@ CATEGORIES = {
         "sizes": ["40", "41", "42", "43", "44", "45"]
     },
     "women": {
-        "name": "נשים", 
+        "name": "נשים",
         "url": "https://www.timberland.co.il/women/%D7%94%D7%A0%D7%A2%D7%9C%D7%94",
         "sizes": ["36", "37", "38", "39", "40", "41"]
     },
     "kids": {
         "name": "ילדים",
-        "url": "https://www.timberland.co.il/kids/toddlers-0-5y", 
+        "url": "https://www.timberland.co.il/kids/toddlers-0-5y",
         "sizes": ["28", "29", "30", "31", "32", "33", "34", "35"]
     }
 }
 
-# הודעות הבוט
+# --- הודעות ---
 MESSAGES = {
     "welcome": "👋 שלום {name}!\n\n🔔 אני אעזור לך לקבל התראות על נעלי טימברלנד חדשות!\n\n👟 באיזו קטגוריה אתה מעוניין?",
     "size_prompt": "📏 מה המידה שלך ב-{category}?\n\n🔢 מידות זמינות: {size_range}",
@@ -45,6 +47,6 @@ MESSAGES = {
     "reset_no_data": "ℹ️ אין לך העדפות שמורות."
 }
 
-# הגדרות לוגים
+# --- לוגים ---
 ENABLE_DEBUG_LOGS = True
 ENABLE_ADMIN_NOTIFICATIONS = bool(ADMIN_CHAT_ID)
