@@ -50,15 +50,12 @@ jobs:
           set -e
           python - << 'PY'
           import sys, subprocess
-          # ננסה להריץ עם --dry-run; אם אין פרמטר – נריץ רגיל
           cmd = ["python", "main_playwright.py", "--dry-run"]
           try:
               subprocess.check_call(cmd)
           except subprocess.CalledProcessError:
-              # קוד החזיר שגיאה – ננסה ריצה רגילה
               subprocess.check_call(["python", "main_playwright.py"])
           except SystemExit:
-              # אם הסקריפט קורא ל-exit כשהוא מסיים תקין
               pass
           print("playwright smoke OK")
           PY
@@ -87,8 +84,7 @@ jobs:
           if-no-files-found: ignore
 
   scheduled_run:
-    name: Scheduled scan & notify
-    # נרוץ רק ב-schedule או בהרצה ידנית (workflow_dispatch)
+    name: Scheduled scan & notify (per-user)
     if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
     timeout-minutes: 35
@@ -108,18 +104,11 @@ jobs:
           pip install -r requirements.txt
           python -m playwright install --with-deps
 
-      - name: Run scraper
+      - name: Run per-user batch
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
         run: |
-          python main_playwright.py
-
-      - name: Notify via bot (single pass)
-        env:
-          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
-        run: |
-          # אם מימשת דגל ייעודי למשל --notify-once השתמש בו; אחרת סשן רגיל/פונקציה ששולחת עדכונים
-          python main_bot.py || true
+          python run_batch.py
 
       - name: Upload artifacts (results & state)
         if: always()
@@ -127,7 +116,6 @@ jobs:
         with:
           name: run-artifacts
           path: |
-            *.log
-            user_data.json
-            price_history.json
+            out/*.json
+            state/*.json
           if-no-files-found: ignore
