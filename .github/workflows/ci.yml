@@ -1,15 +1,27 @@
-name: CI - Timberland bot
+name: CI & Scheduler - Timberland Bot
 
 on:
   push:
     branches: [ "main" ]
   pull_request:
     branches: [ "main" ]
-  workflow_dispatch:
+  workflow_dispatch: {}
+  schedule:
+    # ריצות מתוזמנות פעמיים ביום (07:05 ו-19:05 לפי UTC)
+    - cron: "5 7,19 * * *"
+
+concurrency:
+  group: timberland-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
 
 jobs:
-  test:
+  ci:
+    name: CI (install + smoke tests)
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -18,25 +30,42 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+          cache: "pip"
 
-      - name: Install deps
+      - name: Install dependencies (pip + Playwright)
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           python -m playwright install --with-deps
 
-      - name: Lint (optional)
+      - name: Lint (non-blocking)
         run: |
           python -m pip install flake8
           flake8 --max-line-length=120 || true
 
-      - name: Dry run playwright scraper
-        run: |
-          python main_playwright.py --dry-run || python main_playwright.py
+      - name: Dry-run scraper (fallback to normal run)
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+        run: |
+          set -e
+          python - << 'PY'
+          import sys, subprocess
+          # ננסה להריץ עם --dry-run; אם אין פרמטר – נריץ רגיל
+          cmd = ["python", "main_playwright.py", "--dry-run"]
+          try:
+              subprocess.check_call(cmd)
+          except subprocess.CalledProcessError:
+              # קוד החזיר שגיאה – ננסה ריצה רגילה
+              subprocess.check_call(["python", "main_playwright.py"])
+          except SystemExit:
+              # אם הסקריפט קורא ל-exit כשהוא מסיים תקין
+              pass
+          print("playwright smoke OK")
+          PY
 
-      - name: Bot import sanity
+      - name: Import sanity for bot
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
         run: |
           python - << 'PY'
           import importlib.util
@@ -45,5 +74,60 @@ jobs:
           spec.loader.exec_module(m)
           print("main_bot imported OK")
           PY
+
+      - name: Upload artifacts (optional state files)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-artifacts
+          path: |
+            *.log
+            user_data.json
+            price_history.json
+          if-no-files-found: ignore
+
+  scheduled_run:
+    name: Scheduled scan & notify
+    # נרוץ רק ב-schedule או בהרצה ידנית (workflow_dispatch)
+    if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies (pip + Playwright)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          python -m playwright install --with-deps
+
+      - name: Run scraper
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+        run: |
+          python main_playwright.py
+
+      - name: Notify via bot (single pass)
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+        run: |
+          # אם מימשת דגל ייעודי למשל --notify-once השתמש בו; אחרת סשן רגיל/פונקציה ששולחת עדכונים
+          python main_bot.py || true
+
+      - name: Upload artifacts (results & state)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: run-artifacts
+          path: |
+            *.log
+            user_data.json
+            price_history.json
+          if-no-files-found: ignore
