@@ -1,183 +1,252 @@
-import os
+# main_bot.py
+# Bot that auto-registers users on /start and stores their preferences in user_data.json.
+# Supports: /start (register), /prefs (guided setup), /set men 43 0-300 (quick setup), /show (view prefs)
+# Requires: python-telegram-bot ~= 13.x  (sync API)
+# Reads TELEGRAM_TOKEN from config.py (which should read it from ENV)
+
 import json
-import logging
-from telegram import Update, ReplyKeyboardMarkup
+import os
+from pathlib import Path
+from typing import Dict, Any
+
+from telegram import Update, ParseMode, ReplyKeyboardMarkup, ReplyKeyboardRemove
 from telegram.ext import (
-    ApplicationBuilder, CommandHandler, MessageHandler, filters,
-    ContextTypes, ConversationHandler
+    Updater,
+    CommandHandler,
+    MessageHandler,
+    Filters,
+    CallbackContext,
+    ConversationHandler,
 )
-from config import *
 
-# שלבים בשיחה
-START, GENDER, SIZE, PRICE = range(4)
+# ---- Project Config ----
+# Expecting TELEGRAM_TOKEN inside config.py, e.g.:
+# TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN","").strip()
+try:
+    from config import TELEGRAM_TOKEN
+except Exception:
+    TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "").strip()
 
-# טעינת נתוני משתמשים מהקובץ (אם קיים)
-if os.path.exists(USER_DATA_FILE):
-    with open(USER_DATA_FILE, "r") as f:
-        user_data = json.load(f)
-else:
-    user_data = {}
+# Files
+USER_DATA_FILE = "user_data.json"
 
-# שמירת נתוני המשתמשים לקובץ
-def save_user_data():
-    with open(USER_DATA_FILE, "w") as f:
-        json.dump(user_data, f, ensure_ascii=False, indent=2)
+# Defaults
+DEFAULT_PREFS = {
+    "gender": "men",     # valid: men/women/kids (must match your CATEGORIES keys in scraper)
+    "size": "43",        # string preferred (maps via size_map.json)
+    "price": "0-300",    # "min-max"
+}
 
-# התחלת שיחה עם המשתמש
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_name = update.effective_user.first_name or "משתמש"
-    keyboard = [["גברים", "נשים", "ילדים"]]
-    reply_markup = ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
-    await update.message.reply_text(
-        f"👋 שלום {user_name}!\n\n🔔 אני אעזור לך לקבל התראות על נעלי טימברלנד חדשות!\n\n👟 באיזו קטגוריה אתה מעוניין?", 
-        reply_markup=reply_markup
+# States for Conversation (/prefs)
+CHOOSE_CATEGORY, CHOOSE_SIZE, CHOOSE_PRICE = range(3)
+
+# --------- Storage Helpers ---------
+def load_users() -> Dict[str, Any]:
+    """Load all users from user_data.json"""
+    try:
+        with open(USER_DATA_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return {}
+    except Exception:
+        return {}
+
+def save_users(data: Dict[str, Any]) -> None:
+    """Persist all users to user_data.json (human-readable)"""
+    Path(USER_DATA_FILE).write_text(
+        json.dumps(data, ensure_ascii=False, indent=2),
+        encoding="utf-8",
     )
-    return GENDER
 
-# בחירת מגדר
-async def gender_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = str(update.effective_user.id)
-    category_map = {"גברים": "men", "נשים": "women", "ילדים": "kids"}
-    gender_input = update.message.text.strip()
-    if gender_input not in category_map:
-        keyboard = [["גברים", "נשים", "ילדים"]]
-        reply_markup = ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
-        await update.message.reply_text("❌ אנא בחר מהאפשרויות:", reply_markup=reply_markup)
-        return GENDER
-    gender = category_map[gender_input]
-    user_data[user_id] = {"gender": gender}
-    save_user_data()
-    category_names = {"men": "גברים", "women": "נשים", "kids": "ילדים"}
-    valid_sizes = {
-        "men": "40-45",
-        "women": "36-41", 
-        "kids": "28-35"
-    }
-    size_range = valid_sizes.get(gender, "40-45")
-    await update.message.reply_text(
-        f"📏 מה המידה שלך ב-{category_names.get(gender, '')}?\n\n🔢 מידות זמינות: {size_range}"
+def get_or_create_user(chat_id: int) -> Dict[str, Any]:
+    """Return a user entry, creating with defaults if missing"""
+    users = load_users()
+    key = str(chat_id)
+    if key not in users:
+        users[key] = {
+            "chat_id": chat_id,
+            **DEFAULT_PREFS
+        }
+        save_users(users)
+    return users[key]
+
+def set_user_prefs(chat_id: int, *, gender: str = None, size: str = None, price: str = None) -> Dict[str, Any]:
+    """Update user preferences. Pass None to keep existing."""
+    users = load_users()
+    key = str(chat_id)
+    if key not in users:
+        users[key] = {"chat_id": chat_id, **DEFAULT_PREFS}
+    if gender is not None:
+        users[key]["gender"] = gender
+    if size is not None:
+        users[key]["size"] = size
+    if price is not None:
+        users[key]["price"] = price
+    save_users(users)
+    return users[key]
+
+# --------- Utilities ---------
+def format_prefs(u: Dict[str, Any]) -> str:
+    """Return human-readable summary of preferences for Telegram."""
+    return (
+        f"*Your preferences:*\n"
+        f"• Category: `{u.get('gender','-')}`\n"
+        f"• Size: `{u.get('size','-')}`\n"
+        f"• Price: `{u.get('price','-')}`"
     )
-    return SIZE
 
-# בחירת מידה
-async def size_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = str(update.effective_user.id)
-    size = update.message.text.strip()
-    
-    if not size.isdigit():
-        await update.message.reply_text("❌ אנא הזן מספר תקין (למשל: 43)")
-        return SIZE
-    
-    # בדיקת מידות תקינות לפי קטגוריה
-    category = user_data[user_id]["gender"]
-    valid_sizes = {
-        "men": ["40", "41", "42", "43", "44", "45"],
-        "women": ["36", "37", "38", "39", "40", "41"],
-        "kids": ["28", "29", "30", "31", "32", "33", "34", "35"]
-    }
-    
-    if size not in valid_sizes.get(category, []):
-        category_names = {"men": "גברים", "women": "נשים", "kids": "ילדים"}
-        available = ", ".join(valid_sizes[category])
-        await update.message.reply_text(
-            f"❌ מידה לא זמינה עבור {category_names[category]}\n\n📏 מידות זמינות: {available}"
+def parse_set_args(text: str):
+    """
+    Parse '/set men 43 0-300' style command.
+    Returns (gender, size, price) or (None,None,None) if can't parse.
+    """
+    parts = text.strip().split()
+    # Expected: ['/set', 'men', '43', '0-300']
+    if len(parts) == 4 and parts[0].lower() == "/set":
+        gender = parts[1].lower()
+        size = parts[2]
+        price = parts[3]
+        if gender not in {"men", "women", "kids"}:
+            return None, None, None
+        if "-" not in price:
+            return None, None, None
+        return gender, size, price
+    return None, None, None
+
+# --------- Handlers ---------
+def start(update: Update, context: CallbackContext):
+    """Auto-register user on /start and show their preferences."""
+    chat_id = update.effective_chat.id
+    user = get_or_create_user(chat_id)
+
+    msg = (
+        f"✅ Registered! Your chat_id is `{chat_id}`\n\n"
+        f"{format_prefs(user)}\n\n"
+        f"You can update via:\n"
+        f"• /prefs (guided)\n"
+        f"• /set men 43 0-300 (quick)\n"
+        f"• /show (show current)"
+    )
+    update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
+
+def show(update: Update, context: CallbackContext):
+    """Show current user preferences."""
+    chat_id = update.effective_chat.id
+    user = get_or_create_user(chat_id)
+    update.message.reply_text(format_prefs(user), parse_mode=ParseMode.MARKDOWN)
+
+def quick_set(update: Update, context: CallbackContext):
+    """Quick set via '/set men 43 0-300'"""
+    chat_id = update.effective_chat.id
+    gender, size, price = parse_set_args(update.message.text or "")
+    if not all([gender, size, price]):
+        update.message.reply_text(
+            "Usage: `/set men 43 0-300`\n(valid genders: men/women/kids)",
+            parse_mode=ParseMode.MARKDOWN,
         )
-        return SIZE
-    
-    user_data[user_id]["size"] = size
-    save_user_data()
-    await update.message.reply_text("💰 מהו טווח המחירים? (למשל: 100-300)")
-    return PRICE
+        return
+    user = set_user_prefs(chat_id, gender=gender, size=size, price=price)
+    update.message.reply_text(
+        f"✅ Updated!\n\n{format_prefs(user)}",
+        parse_mode=ParseMode.MARKDOWN,
+    )
 
-# בחירת טווח מחיר
-async def price_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = str(update.effective_user.id)
-    price = update.message.text.strip()
-    if "-" not in price or not all(p.strip().isdigit() for p in price.split("-")):
-        await update.message.reply_text("❌ אנא כתוב טווח מחיר תקני\n\n📝 דוגמאות: 100-300, 0-200, 150-500")
-        return PRICE
-    
-    # בדיקה שהמחיר המינימלי קטן מהמקסימלי
-    min_price, max_price = map(int, price.split("-"))
-    if min_price >= max_price:
-        await update.message.reply_text("❌ המחיר המינימלי חייב להיות קטן מהמקסימלי")
-        return PRICE
-    user_data[user_id]["price"] = price
-    save_user_data()
-    await update.message.reply_text("✅ מעולה! ההעדפות נשמרו בהצלחה!\n\n🎯 תקבל התראות על נעליים חדשות פעמיים ביום\n📱 השתמש ב-/show כדי לראות את ההעדפות\n🔄 השתמש ב-/reset כדי לאפס")
+# ---- /prefs conversation (guided flow) ----
+def prefs_start(update: Update, context: CallbackContext):
+    """Start guided preferences setup."""
+    chat_id = update.effective_chat.id
+    get_or_create_user(chat_id)  # ensure user exists
+
+    reply_kb = [["men", "women", "kids"]]
+    update.message.reply_text(
+        "Select category (men/women/kids):",
+        reply_markup=ReplyKeyboardMarkup(reply_kb, one_time_keyboard=True, resize_keyboard=True),
+    )
+    return CHOOSE_CATEGORY
+
+def prefs_choose_category(update: Update, context: CallbackContext):
+    val = (update.message.text or "").strip().lower()
+    if val not in {"men", "women", "kids"}:
+        update.message.reply_text("Please choose one of: men / women / kids")
+        return CHOOSE_CATEGORY
+    context.user_data["gender"] = val
+    update.message.reply_text("Enter size (e.g., 43):", reply_markup=ReplyKeyboardRemove())
+    return CHOOSE_SIZE
+
+def prefs_choose_size(update: Update, context: CallbackContext):
+    val = (update.message.text or "").strip()
+    if not val:
+        update.message.reply_text("Please enter a size, e.g., 43")
+        return CHOOSE_SIZE
+    context.user_data["size"] = val
+    update.message.reply_text("Enter price range (min-max), e.g., 0-300:")
+    return CHOOSE_PRICE
+
+def prefs_choose_price(update: Update, context: CallbackContext):
+    val = (update.message.text or "").strip()
+    if "-" not in val:
+        update.message.reply_text("Please enter price as min-max, e.g., 0-300:")
+        return CHOOSE_PRICE
+
+    # Save all
+    chat_id = update.effective_chat.id
+    gender = context.user_data.get("gender", DEFAULT_PREFS["gender"])
+    size = context.user_data.get("size", DEFAULT_PREFS["size"])
+    price = val
+
+    user = set_user_prefs(chat_id, gender=gender, size=size, price=price)
+    update.message.reply_text(
+        f"✅ Preferences saved!\n\n{format_prefs(user)}",
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=ReplyKeyboardRemove(),
+    )
     return ConversationHandler.END
 
-# צפייה בהעדפות המשתמש
-async def show(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = str(update.effective_user.id)
-    prefs = user_data.get(user_id)
-    if prefs:
-        gender_map = {"men": "גברים", "women": "נשים", "kids": "ילדים"}
-        gender = gender_map.get(prefs["gender"], "לא נבחר")
-        await update.message.reply_text(
-            f"👤 ההעדפות שלך:\n📂 קטגוריה: {gender}\n📏 מידה: {prefs['size']}\n💰 טווח מחיר: {prefs['price']} ש\"ח\n\n🔔 תקבל התראות פעמיים ביום על נעליים חדשות!"
-        )
-    else:
-        await update.message.reply_text("❌ אין לך עדיין העדפות מוגדרות.\n\n🚀 שלח /start כדי להתחיל!")
+def prefs_cancel(update: Update, context: CallbackContext):
+    update.message.reply_text("Canceled.", reply_markup=ReplyKeyboardRemove())
+    return ConversationHandler.END
 
-# פקודת עזרה
-async def help_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    help_text = """🤖 *בוט מעקב נעלי טימברלנד*
-
-📋 *פקודות זמינות:*
-/start - הגדרת העדפות אישיות
-/show - צפייה בהעדפות הנוכחיות
-/reset - איפוס ההעדפות
-/help - הצגת הודעה זו
-
-🎯 *איך זה עובד?*
-1. בחר קטגוריה (גברים/נשים/ילדים)
-2. הזן את המידה שלך
-3. קבע טווח מחירים
-4. קבל התראות פעמיים ביום!
-
-💡 *טיפ:* תוכל לשנות את ההעדפות בכל עת עם /start"""
-    await update.message.reply_text(help_text, parse_mode="Markdown")
-
-# איפוס העדפות
-async def reset_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = str(update.effective_user.id)
-    if user_id in user_data:
-        del user_data[user_id]
-        save_user_data()
-        await update.message.reply_text("✅ ההעדפות שלך נמחקו. תוכל להתחיל מחדש עם /start")
-    else:
-        await update.message.reply_text("ℹ️ אין לך העדפות שמורות.")
-
-# הגדרת הבוט והפעלה
-def main():
-    # אם אין טוקן במשתני סביבה, שים אותו כאן:
-    token = TELEGRAM_TOKEN
-    
-    if not token:
-        print("Error: TELEGRAM_TOKEN environment variable not set!")
-        return
-    
-    app = ApplicationBuilder().token(token).build()
-    
-    # ניהול השיחה לפי השלבים
-    conv = ConversationHandler(
-        entry_points=[CommandHandler("start", start)],
-        states={
-            GENDER: [MessageHandler(filters.TEXT & ~filters.COMMAND, gender_handler)],
-            SIZE: [MessageHandler(filters.TEXT & ~filters.COMMAND, size_handler)],
-            PRICE: [MessageHandler(filters.TEXT & ~filters.COMMAND, price_handler)],
-        },
-        fallbacks=[]
+def help_cmd(update: Update, context: CallbackContext):
+    update.message.reply_text(
+        "Commands:\n"
+        "/start — register & show prefs\n"
+        "/show — show current prefs\n"
+        "/set men 43 0-300 — quick set\n"
+        "/prefs — guided setup\n",
+        parse_mode=ParseMode.MARKDOWN,
     )
 
-    # הוספת הפקודות
-    app.add_handler(conv)
-    app.add_handler(CommandHandler("show", show))
-    app.add_handler(CommandHandler("reset", reset_handler))
-    app.add_handler(CommandHandler("help", help_handler))
-    app.run_polling()
+# --------- Main ---------
+def main():
+    token = TELEGRAM_TOKEN.strip()
+    if not token:
+        raise SystemExit("TELEGRAM_TOKEN is missing. Set it in ENV or config.py")
+
+    updater = Updater(token=token, use_context=True)
+    dp = updater.dispatcher
+
+    # Basic commands
+    dp.add_handler(CommandHandler("start", start))
+    dp.add_handler(CommandHandler("show", show))
+    dp.add_handler(CommandHandler("set", quick_set))
+    dp.add_handler(CommandHandler("help", help_cmd))
+
+    # /prefs conversation
+    conv = ConversationHandler(
+        entry_points=[CommandHandler("prefs", prefs_start)],
+        states={
+            CHOOSE_CATEGORY: [MessageHandler(Filters.text & ~Filters.command, prefs_choose_category)],
+            CHOOSE_SIZE:     [MessageHandler(Filters.text & ~Filters.command, prefs_choose_size)],
+            CHOOSE_PRICE:    [MessageHandler(Filters.text & ~Filters.command, prefs_choose_price)],
+        },
+        fallbacks=[CommandHandler("cancel", prefs_cancel)],
+        allow_reentry=True,
+    )
+    dp.add_handler(conv)
+
+    # Start bot (polling)
+    updater.start_polling(clean=True)
+    updater.idle()
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
     main()
