@@ -5,10 +5,12 @@ from bs4 import BeautifulSoup
 from playwright.sync_api import sync_playwright
 from config import *
 
+# ---------------- Telegram helpers ----------------
+
 def send_telegram_message(text, chat_id=None):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     target_chat = chat_id or ADMIN_CHAT_ID
-    payload = {"chat_id": target_chat, "text": text, "parse_mode": "Markdown"}
+    payload = {"chat_id": target_chat, "text": text, "parse_mode": "Markdown", "disable_web_page_preview": True}
     try:
         requests.post(url, data=payload, timeout=30)
     except Exception:
@@ -21,12 +23,14 @@ def send_photo_with_caption(image_url, caption, chat_id=None):
         "chat_id": target_chat,
         "photo": image_url,
         "caption": caption,
-        "parse_mode": "Markdown",
+        "parse_mode": "Markdown"
     }
     try:
         requests.post(url, data=payload, timeout=30)
     except Exception:
         pass
+
+# ---------------- State / config helpers ----------------
 
 def load_previous_state():
     try:
@@ -61,10 +65,7 @@ def load_size_mapping():
         return {
             "men": {"40": 791, "41": 792, "42": 793, "43": 794, "44": 795, "45": 796},
             "women": {"36": 798, "37": 799, "38": 800, "39": 801, "40": 802, "41": 803},
-            "kids": {
-                "28": 230, "29": 231, "30": 232, "31": 233, "32": 234,
-                "33": 235, "34": 236, "35": 237
-            },
+            "kids": {"28": 230, "29": 231, "30": 232, "31": 233, "32": 234, "33": 235, "34": 236, "35": 237}
         }
     except Exception:
         return {}
@@ -80,9 +81,11 @@ def category_to_url(category, size, price):
     size_code = size_to_code(size, category)
     if not size_code:
         return None
-    # price format expected like "0-300" -> convert to "0_300"
+    # "0-300" -> "0_300"
     price_param = str(price).replace("-", "_")
     return f"{base_url}?price={price_param}&size={size_code}&product_list_order=low_to_high"
+
+# ---------------- Main logic ----------------
 
 def check_shoes():
     if ENABLE_DEBUG_LOGS:
@@ -106,10 +109,10 @@ def check_shoes():
         category = prefs.get("gender", "men")
         size = prefs.get("size", "43")
         price = prefs.get("price", "0-300")
+        chat_id = prefs.get("chat_id", user_id)  # זהותו של הנמען בפועל
 
         url = category_to_url(category, size, price)
 
-        # שליחת URL לבדיקה (רק למפתח/אדמין)
         if ENABLE_ADMIN_NOTIFICATIONS:
             debug_msg = (
                 f"🔍 *בודק למשתמש:* `{user_id}`\n"
@@ -123,7 +126,7 @@ def check_shoes():
             if ENABLE_DEBUG_LOGS:
                 print(f"Error generating URL for user {user_id}")
             if ENABLE_ADMIN_NOTIFICATIONS:
-                send_telegram_message(f"❌ שגיאה ב-URL למשתמש `{user_id}`")
+                send_telegram_message(f"❌ שגיאה ב-URL למשתמש `{user_id}`", chat_id=chat_id)
             continue
 
         try:
@@ -131,11 +134,11 @@ def check_shoes():
                 if ENABLE_DEBUG_LOGS:
                     print(f"Launching browser for user {user_id}...")
                 browser = p.chromium.launch(headless=True)
-                context = browser.new_context(locale="he-IL")
+                context = browser.new_context(locale='he-IL')
                 page = context.new_page()
                 page.goto(url, timeout=SCAN_TIMEOUT)
 
-                # טעינת כל המוצרים (לחיצות על "עוד")
+                # טעינת כל המוצרים (לחיצה על "עוד")
                 products_loaded = 0
                 while True:
                     try:
@@ -153,92 +156,110 @@ def check_shoes():
                             print(f"Error loading more products: {str(e)}")
                         break
 
-                soup = BeautifulSoup(page.content(), "html.parser")
-                product_cards = soup.select("div.product")
+                soup = BeautifulSoup(page.content(), 'html.parser')
+                product_cards = soup.select('div.product')
                 if ENABLE_DEBUG_LOGS:
                     print(f"Found {len(product_cards)} products for user {user_id}")
 
+                # נאגד את כל הפריטים שנמצאו כדי לשלוח סיכום מרוכז
+                all_items = []
                 new_products = 0
+
                 for card in product_cards:
                     link_tag = card.select_one("a")
                     img_tag = card.select_one("img")
                     price_tags = card.select("span.price")
 
-                    title = (
-                        img_tag["alt"].strip()
-                        if img_tag and img_tag.has_attr("alt")
-                        else "ללא שם"
-                    )
-                    link = link_tag["href"] if link_tag and link_tag.has_attr("href") else None
+                    title = img_tag['alt'].strip() if img_tag and img_tag.has_attr('alt') else "ללא שם"
+                    link = link_tag['href'] if link_tag and link_tag.has_attr('href') else None
                     if not link:
                         continue
                     if not link.startswith("http"):
                         link = "https://www.timberland.co.il" + link
 
-                    img_url = img_tag["src"] if img_tag and img_tag.has_attr("src") else None
+                    img_url = img_tag['src'] if img_tag and img_tag.has_attr('src') else None
 
                     prices = []
                     for tag in price_tags:
                         try:
-                            text = (
-                                tag.text.strip()
-                                .replace("\xa0", "")
-                                .replace("₪", "")
-                                .replace(",", "")
-                            )
+                            text = tag.text.strip().replace('\xa0', '').replace('₪', '').replace(',', '')
                             price_val = float(text)
                             if price_val > 0:
                                 prices.append(price_val)
                         except Exception:
                             continue
-
                     if not prices:
                         continue
 
                     price_val = min(prices)
+
+                    # נשמור סטייט מלא (למנגנון "חדש/קיים")
                     key = f"{user_id}_{link}"
                     current_state[key] = {
+                        "title": title, "link": link, "price": price_val, "img_url": img_url
+                    }
+
+                    # רשימה לסיכום מרוכז
+                    all_items.append({
                         "title": title,
                         "link": link,
                         "price": price_val,
                         "img_url": img_url,
-                    }
+                        "is_new": key not in previous_state
+                    })
 
+                    # עדיין נשלח פוש עם תמונה רק לפריטים "חדשים" כדי לא להציף
                     if key not in previous_state:
                         caption = f"*{title}* - ₪{price_val}\n[לינק למוצר]({link})"
                         try:
-                            send_photo_with_caption(
-                                img_url or "https://via.placeholder.com/300",
-                                caption,
-                                user_id,
-                            )
+                            send_photo_with_caption(img_url or "https://via.placeholder.com/300", caption, chat_id)
                             if ENABLE_DEBUG_LOGS:
-                                print(f"Sent new product alert to user {user_id}: {title}")
+                                print(f"Sent NEW item to user {user_id}: {title}")
                             new_products += 1
                         except Exception as e:
                             if ENABLE_DEBUG_LOGS:
-                                print(
-                                    f"Failed to send message to user {user_id}: {str(e)}"
-                                )
+                                print(f"Failed to send photo message to user {user_id}: {str(e)}")
 
-                if ENABLE_DEBUG_LOGS:
-                    print(f"Sent {new_products} new product alerts to user {user_id}")
+                # --- שליחת סיכום מרוכז עם כל הפריטים שנמצאו (גם אם אין חדשים) ---
+                if all_items:
+                    # מיון מהזול ליקר
+                    all_items.sort(key=lambda x: x["price"])
+                    # נגביל ל-15 כדי לא לעבור מגבלת 4096 תווים
+                    subset = all_items[:15]
+                    header = f"*👟 תוצאות עדכניות* — {category}, מידה {size}, טווח {price}\n"
+                    lines = []
+                    for i, it in enumerate(subset, 1):
+                        mark = "🆕 " if it["is_new"] else ""
+                        lines.append(f"{i}. {mark}*{it['title'][:60]}* — ₪{int(it['price'])}\n{it['link']}")
+                    if len(all_items) > len(subset):
+                        lines.append(f"\nועוד {len(all_items) - len(subset)} פריטים…")
+                    lines.append(f"\n🔎 חיפוש: {url}")
+                    msg = header + "\n".join(lines)
+                    send_telegram_message(msg, chat_id=chat_id)
+                    if ENABLE_DEBUG_LOGS:
+                        print(f"Sent summary to user {user_id} with {len(subset)} items (total {len(all_items)}).")
+                else:
+                    # אין פריטים בכלל – גם זה נשלח כדי שתמיד תהיה אינדיקציה
+                    send_telegram_message(
+                        f"*👟 לא נמצאו פריטים כרגע* — {category}, מידה {size}, טווח {price}\n\n🔎 {url}",
+                        chat_id=chat_id
+                    )
+                    if ENABLE_DEBUG_LOGS:
+                        print(f"No items found for user {user_id}, sent empty summary.")
 
                 browser.close()
                 if ENABLE_DEBUG_LOGS:
-                    print(f"Completed scan for user {user_id}")
+                    print(f"Completed scan for user {user_id} (new={new_products}, total={len(all_items)})")
 
         except Exception as e:
             if ENABLE_DEBUG_LOGS:
                 print(f"Error scanning for user {user_id}: {str(e)}")
+            # נמשיך למשתמש הבא
             continue
 
     save_current_state(current_state)
     if ENABLE_DEBUG_LOGS:
-        print(
-            f"[{__import__('datetime').datetime.now()}] Shoe check completed. "
-            f"Found {len(current_state)} total products."
-        )
+        print(f"[{__import__('datetime').datetime.now()}] Shoe check completed. Stored {len(current_state)} items total.")
 
 if __name__ == "__main__":
     try:
