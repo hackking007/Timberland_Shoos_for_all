@@ -2,8 +2,8 @@ name: Timberland Onboarding
 
 on:
   schedule:
-    - cron: "*/30 * * * *"   # ריצה כל 30 דקות
-  workflow_dispatch:         # מאפשר הרצה ידנית
+    - cron: "*/30 * * * *"
+  workflow_dispatch:
 
 jobs:
   onboarding:
@@ -17,8 +17,8 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: timberland-state
-          path: .              # <<< חשוב: לשפוך לשורש הריפו
-        continue-on-error: true   # אם אין artifact עדיין, לא נכשלים
+          path: .            # חשוב - לשפוך לשורש הריפו
+        continue-on-error: true
 
       - name: Set up Python
         uses: actions/setup-python@v5
