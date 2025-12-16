@@ -8,6 +8,7 @@ from zoneinfo import ZoneInfo
 from datetime import datetime
 
 from config import *
+from coupon_fetcher import get_coupons
 
 # ---------------- Token ----------------
 BOT_TOKEN = (os.getenv("TELEGRAM_BOT_TOKEN") or os.getenv("TELEGRAM_TOKEN") or TELEGRAM_TOKEN or "").strip()
@@ -90,7 +91,6 @@ def load_size_mapping():
 
 
 def load_apparel_size_mapping():
-    # אם הקובץ לא קיים - נחזיר ריק, וביגוד ירוץ בלי פילטר size
     path = globals().get("APPAREL_SIZE_MAP_FILE", "apparel_size_map.json")
     return load_json(path, {})
 
@@ -117,25 +117,16 @@ def build_shoes_url(gender, shoe_size, price_min, price_max):
 
 
 def build_clothing_url(gender, apparel_size, price_min, price_max):
-    """
-    גברים ביגוד עובד כך (דוגמה שלך):
-    https://www.timberland.co.il/men/clothing?price=68_1001&size=4
-
-    נשים כרגע: אם אין מוצרים/אין פילטר מידות - אין size_code.
-    במקרה כזה נריץ בלי size כדי לא "לשבור" ונקבל תוצאות אם יש מלאי לפי מחיר.
-    """
     if gender not in CLOTHING_URLS:
         return None
 
     base_url = CLOTHING_URLS[gender]
 
-    # אם המשתמש לא נתן מידה לביגוד - נריץ בלי פילטר size
     if not apparel_size:
         return f"{base_url}?price={int(price_min)}_{int(price_max)}&product_list_order=low_to_high"
 
     size_code = apparel_size_to_code(apparel_size, gender)
 
-    # אם אין מיפוי/אין פילטר (לדוגמה נשים כרגע) - ריצה בלי size
     if not size_code:
         return f"{base_url}?price={int(price_min)}_{int(price_max)}&product_list_order=low_to_high"
 
@@ -144,10 +135,6 @@ def build_clothing_url(gender, apparel_size, price_min, price_max):
 # ---------------- Scheduling guard ----------------
 
 def should_run_checker_now():
-    """
-    הסריקה רצה רק ב-07:00 וב-19:00 שעון ישראל.
-    (ה-workflow יכול לרוץ כל 30 דקות, אבל checker ידלג אם זה לא חלון זמן).
-    """
     tz = ZoneInfo("Asia/Jerusalem")
     now = datetime.now(tz)
     send_hours = [7, 19]
@@ -227,6 +214,27 @@ def extract_products(product_cards):
 
     return items
 
+# ---------------- Coupons block ----------------
+
+def build_coupons_block():
+    coupons = get_coupons(force_refresh=False, max_items=5)
+    if not coupons:
+        return ""
+
+    lines = ["\n🎟️ <b>קופונים והטבות</b> (לא תמיד מובטח פעיל, מומלץ לבדוק בקופה):"]
+    for c in coupons:
+        src = html.escape(c.get("source", ""))
+        code = (c.get("code") or "").strip()
+        title = html.escape(c.get("title", ""))
+        url = html.escape(c.get("url", ""))
+
+        if code:
+            lines.append(f"- <b>{src}</b>: <code>{html.escape(code)}</code> - {title}\n{url}")
+        else:
+            lines.append(f"- <b>{src}</b>: {title}\n{url}")
+
+    return "\n".join(lines)
+
 # ---------------- Send items ----------------
 
 def send_items_to_user(user_id, chat_id, kind_label, url, items, previous_state, current_state):
@@ -247,6 +255,8 @@ def send_items_to_user(user_id, chat_id, kind_label, url, items, previous_state,
             send_photo_with_caption(it["img_url"] or "https://via.placeholder.com/300", caption, chat_id=chat_id)
             new_count += 1
 
+    coupons_block = build_coupons_block()
+
     if all_items:
         all_items.sort(key=lambda x: x["price"])
         subset = all_items[:15]
@@ -263,13 +273,14 @@ def send_items_to_user(user_id, chat_id, kind_label, url, items, previous_state,
             lines.append(f"\nועוד {len(all_items) - len(subset)} פריטים...")
 
         lines.append(f"\n🔎 {html.escape(url)}")
-
-        send_telegram_message(header + "\n".join(lines), chat_id=chat_id)
+        msg = header + "\n".join(lines) + (coupons_block if coupons_block else "")
+        send_telegram_message(msg, chat_id=chat_id)
     else:
-        send_telegram_message(
-            f"👟 <b>לא נמצאו פריטים</b> - <b>{html.escape(kind_label)}</b>\n\n🔎 {html.escape(url)}",
-            chat_id=chat_id
+        msg = (
+            f"👟 <b>לא נמצאו פריטים</b> - <b>{html.escape(kind_label)}</b>\n\n🔎 {html.escape(url)}"
+            + (coupons_block if coupons_block else "")
         )
+        send_telegram_message(msg, chat_id=chat_id)
 
     return new_count, len(all_items)
 
