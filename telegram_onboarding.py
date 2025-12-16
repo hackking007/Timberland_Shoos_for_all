@@ -1,328 +1,355 @@
 import os
+import re
 import json
 import requests
+from datetime import datetime
 
-# Telegram bot token from GitHub Secrets
-BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+# config.py חייב להכיל לפחות:
+# USER_DATA_FILE = "user_data.json"
+# LAST_UPDATE_ID_FILE = "last_update_id.json"
+# ENABLE_DEBUG_LOGS = True/False
+# ENABLE_ADMIN_NOTIFICATIONS = True/False
+# ADMIN_CHAT_ID = <int>
+# (אפשר גם TELEGRAM_TOKEN, אבל אנחנו נעדיף env בשם TELEGRAM_BOT_TOKEN)
+from config import USER_DATA_FILE, LAST_UPDATE_ID_FILE, ENABLE_DEBUG_LOGS, ENABLE_ADMIN_NOTIFICATIONS, ADMIN_CHAT_ID
 
-# Admin chat id (optional) - from GitHub Secrets or env
-ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")  # נשווה כמחרוזת
-
-# State files
-USER_DATA_FILE = "user_data.json"
-OFFSET_FILE = "last_update_id.json"
+BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN") or os.getenv("TELEGRAM_TOKEN")  # fallback אם יש לך משתנה אחר
 
 
-def telegram_url(method: str) -> str:
+# ---------------- Telegram helpers ----------------
+
+def tg_api_url(method: str) -> str:
     return f"https://api.telegram.org/bot{BOT_TOKEN}/{method}"
 
 
-def load_json(path, default):
+def send_message(chat_id: int, text: str, disable_preview: bool = True) -> None:
+    url = tg_api_url("sendMessage")
+    payload = {
+        "chat_id": chat_id,
+        "text": text,
+        "parse_mode": "HTML",
+        "disable_web_page_preview": disable_preview,
+    }
     try:
-        if not os.path.exists(path):
-            return default
+        resp = requests.post(url, data=payload, timeout=30)
+        if ENABLE_DEBUG_LOGS:
+            print(f"send_message to {chat_id} -> status {resp.status_code}")
+    except Exception as e:
+        if ENABLE_DEBUG_LOGS:
+            print(f"send_message error: {e}")
+
+
+def admin_notify(text: str) -> None:
+    if not ENABLE_ADMIN_NOTIFICATIONS:
+        return
+    try:
+        send_message(ADMIN_CHAT_ID, text)
+    except Exception:
+        pass
+
+
+# ---------------- Persistence ----------------
+
+def load_json(path: str, default):
+    try:
         with open(path, "r", encoding="utf-8") as f:
             return json.load(f)
-    except Exception:
+    except FileNotFoundError:
+        return default
+    except Exception as e:
+        if ENABLE_DEBUG_LOGS:
+            print(f"load_json error for {path}: {e}")
         return default
 
 
-def save_json(path, data):
+def save_json(path: str, data):
     try:
         with open(path, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
+            json.dump(data, f, ensure_ascii=False, indent=2)
     except Exception as e:
-        print(f"Error saving {path}: {e}")
+        if ENABLE_DEBUG_LOGS:
+            print(f"save_json error for {path}: {e}")
 
 
-def send_message(chat_id, text):
-    if not BOT_TOKEN:
-        print("ERROR: TELEGRAM_BOT_TOKEN is not set - cannot send_message")
-        return
-
-    try:
-        resp = requests.post(
-            telegram_url("sendMessage"),
-            json={"chat_id": chat_id, "text": text},
-            timeout=20,
-        )
-        print(f"send_message to {chat_id} -> status {resp.status_code}")
-        if not resp.ok:
-            print("send_message response text:", resp.text)
-    except Exception as e:
-        print(f"Error sending message to {chat_id}: {e}")
+def load_user_data() -> dict:
+    return load_json(USER_DATA_FILE, {})
 
 
-def send_instructions(chat_id):
-    text = (
-        "ברוך הבא לבוט טימברלנד 👟\n\n"
-        "כדי להגדיר מעקב בהודעה אחת, שלח הודעה בפורמט הבא:\n\n"
-        "<gender> <type> <size> <min_price> <max_price>\n\n"
-        "הסבר:\n"
-        "gender:\n"
-        "  1 = גברים\n"
-        "  2 = נשים\n"
-        "  3 = ילדים\n\n"
-        "type:\n"
-        "  A = הנעלה\n"
-        "  B = ביגוד\n"
-        "  C = גם וגם\n\n"
+def save_user_data(data: dict) -> None:
+    save_json(USER_DATA_FILE, data)
+
+
+def load_last_update_id():
+    # נשתדל לתמוך גם בפורמט {"last_update_id": 123} וגם במספר חשוף
+    raw = load_json(LAST_UPDATE_ID_FILE, None)
+    if raw is None:
+        return None
+    if isinstance(raw, dict) and "last_update_id" in raw:
+        return raw.get("last_update_id")
+    if isinstance(raw, int):
+        return raw
+    return None
+
+
+def save_last_update_id(update_id: int) -> None:
+    save_json(LAST_UPDATE_ID_FILE, {"last_update_id": update_id})
+
+
+# ---------------- Parsing ----------------
+
+ONE_SHOT_RE = re.compile(r"^\s*([123])\s+([ABCabc])\s+(\d{1,2})\s+(\d+)\s+(\d+)\s*$")
+
+
+def map_gender(code: str) -> str:
+    return {"1": "men", "2": "women", "3": "kids"}.get(code, "men")
+
+
+def map_category(code: str) -> str:
+    code = code.upper()
+    return {"A": "shoes", "B": "clothing", "C": "both"}.get(code, "shoes")
+
+
+def welcome_text() -> str:
+    return (
+        "👟 <b>ברוך הבא לבוט מעקב טימברלנד!</b>\n\n"
+        "הבוט יסרוק את Timberland.co.il וישלח לך מוצרים שמתאימים להעדפות שלך.\n\n"
+        "📬 <b>עדכוני מוצרים נשלחים פעמיים ביום</b> - בערך בשעות <b>07:00</b> ו-<b>19:00</b> (שעון ישראל).\n\n"
+        "כדי להגדיר מעקב מותאם אישית בהודעה אחת, שלח את ההודעה בפורמט:\n\n"
+        "<b>מגדר</b> <b>סוג מוצר</b> <b>מידה</b> <b>מחיר מינימלי</b> <b>מחיר מקסימלי</b>\n\n"
+        "קידודים:\n"
+        "1 - גברים\n"
+        "2 - נשים\n"
+        "3 - ילדים\n\n"
+        "A - הנעלה\n"
+        "B - ביגוד\n"
+        "C - גם וגם\n\n"
         "דוגמה:\n"
-        "1 A 43 0 300\n"
-        "זה אומר: גברים, הנעלה, מידה 43, מחיר 0 עד 300 ₪."
+        "<code>1 A 43 128 299</code>\n\n"
+        "אפשר גם להגדיר בהודעות נפרדות אם נוח לך - הבוט יוביל אותך שלב-שלב.\n\n"
+        "סטטוס משתמשים: שלח <code>/stat</code>"
     )
-    send_message(chat_id, text)
 
 
-def parse_combined_message(text):
-    """
-    מצפה לפורמט:
-    <gender> <type> <size> <min_price> <max_price>
-
-    gender:
-        1 = men
-        2 = women
-        3 = kids
-
-    type:
-        A = shoes
-        B = clothing
-        C = both
-
-    example:
-        '1 A 43 0 300'
-    """
-    clean = text.strip().replace(",", " ")
-    parts = [p for p in clean.split() if p]
-
-    if len(parts) != 5:
-        return None, (
-            "❗ פורמט לא תקין.\n"
-            "אנא השתמש בפורמט: 1 A 43 0 300\n"
-            "gender: 1/2/3, type: A/B/C, מידה, מינימום, מקסימום."
-        )
-
-    gender_raw, type_raw, size_raw, min_raw, max_raw = parts
-
-    gender_map = {"1": "men", "2": "women", "3": "kids"}
-    gender = gender_map.get(gender_raw)
-    if not gender:
-        return None, "ערך gender לא תקין. השתמש ב-1 לגברים, 2 לנשים, 3 לילדים."
-
-    type_map = {
-        "A": "shoes",
-        "B": "clothing",
-        "C": "both",
-    }
-    category = type_map.get(type_raw.upper())
-    if not category:
-        return None, "ערך type לא תקין. השתמש ב-A/B/C."
-
-    size = size_raw.strip()
-    if not size:
-        return None, "מידה לא תקינה."
-
-    if not (min_raw.isdigit() and max_raw.isdigit()):
-        return None, "המחירים חייבים להיות מספרים בלבד."
-
-    price_min = int(min_raw)
-    price_max = int(max_raw)
-    if price_min > price_max:
-        return None, "המחיר המינימלי לא יכול להיות גדול מהמקסימלי."
-
-    prefs = {
-        "gender": gender,          # men / women / kids
-        "category": category,      # shoes / clothing / both
-        "size": size,              # נשמר כמחרוזת
-        "price_min": price_min,
-        "price_max": price_max,
-    }
-    return prefs, None
-
-
-def format_stats(user_data: dict) -> str:
+def stat_text(user_data: dict) -> str:
     total = len(user_data)
-    if total == 0:
-        return "📊 אין עדיין משתמשים רשומים בבוט."
-
-    gender_counts = {"men": 0, "women": 0, "kids": 0}
-    category_counts = {"shoes": 0, "clothing": 0, "both": 0}
-    price_min_list = []
-    price_max_list = []
-
-    for uid, prefs in user_data.items():
-        g = prefs.get("gender")
-        c = prefs.get("category")
-        if g in gender_counts:
-            gender_counts[g] += 1
-        if c in category_counts:
-            category_counts[c] += 1
-
-        pm = prefs.get("price_min")
-        px = prefs.get("price_max")
-        if isinstance(pm, int):
-            price_min_list.append(pm)
-        if isinstance(px, int):
-            price_max_list.append(px)
-
-    gender_labels = {
-        "men": "גברים",
-        "women": "נשים",
-        "kids": "ילדים",
-    }
-    category_labels = {
-        "shoes": "הנעלה",
-        "clothing": "ביגוד",
-        "both": "גם וגם",
-    }
-
-    lines = []
-    lines.append("📊 *סטטיסטיקות בוט טימברלנד*")
-    lines.append("")
-    lines.append(f"👥 סה\"כ משתמשים רשומים: *{total}*")
-    lines.append("")
-
-    lines.append("👤 לפי מגדר:")
-    for k, v in gender_counts.items():
-        if v > 0:
-            lines.append(f"• {gender_labels[k]}: {v}")
-
-    lines.append("")
-    lines.append("🧢 לפי סוג מוצר:")
-    for k, v in category_counts.items():
-        if v > 0:
-            lines.append(f"• {category_labels[k]}: {v}")
-
-    if price_min_list and price_max_list:
-        avg_min = sum(price_min_list) / len(price_min_list)
-        avg_max = sum(price_max_list) / len(price_max_list)
-        lines.append("")
-        lines.append(
-            f"💰 ממוצע טווח מחירים שהוגדר:\n"
-            f"min ≈ {int(avg_min)} ₪ | max ≈ {int(avg_max)} ₪"
-        )
-
-    return "\n".join(lines)
-
-
-def handle_message(chat_id, text, user_data):
-    text = text.strip()
-    chat_id_str = str(chat_id)
-
-    print(f"handle_message: chat_id={chat_id_str}, text={text!r}")
-
-    # /start - רק שולח הסבר
-    if text == "/start":
-        send_instructions(chat_id)
-        return
-
-    # /stat או /stats - סטטיסטיקות
-    if text in ("/stat", "/stats"):
-        # אם הוגדר ADMIN_CHAT_ID - רק הוא רואה סטטיסטיקות
-        if ADMIN_CHAT_ID and chat_id_str != ADMIN_CHAT_ID:
-            send_message(chat_id, "פקודת /stats שמורה למנהל הבוט בלבד.")
-            return
-
-        stats_text = format_stats(user_data)
-        send_message(chat_id, stats_text)
-        return
-
-    # הודעה רגילה - ננסה לפרש כהעדפות
-    prefs, error = parse_combined_message(text)
-    if error:
-        send_message(chat_id, error + "\n\nדוגמה: 1 A 43 0 300")
-        return
-
-    # שמירה בפורמט שה-checker מצפה לו
-    user_data[chat_id_str] = {
-        "chat_id": chat_id,
-        "state": "ready",
-        **prefs,
-    }
-
-    save_json(USER_DATA_FILE, user_data)
-
-    gender_he = {"men": "גברים", "women": "נשים", "kids": "ילדים"}
-    category_he = {
-        "shoes": "הנעלה",
-        "clothing": "ביגוד",
-        "both": "הנעלה + ביגוד",
-    }
-
-    text_confirm = (
-        "🎉 ההגדרות נשמרו בהצלחה!\n\n"
-        f"מגדר: {gender_he.get(prefs['gender'], prefs['gender'])}\n"
-        f"סוג מוצר: {category_he.get(prefs['category'], prefs['category'])}\n"
-        f"מידה: {prefs['size']}\n"
-        f"טווח מחירים: {prefs['price_min']} - {prefs['price_max']} ₪\n\n"
-        "הבוט יסרוק עבורך בסבב הקרוב וישלח עדכונים 👟"
+    ids = list(user_data.keys())[:20]
+    return (
+        f"📊 <b>Stats</b>\n"
+        f"Users registered: <b>{total}</b>\n"
+        f"Sample IDs: <code>{', '.join(ids)}</code>"
     )
-    send_message(chat_id, text_confirm)
+
+
+# ---------------- Legacy step-by-step flow ----------------
+# נשמור "שלב" למשתמש כדי לתמוך באפשרות הישנה (1 -> size -> min -> max)
+# state values:
+# - awaiting_gender
+# - awaiting_category
+# - awaiting_size
+# - awaiting_price_min
+# - awaiting_price_max
+# - ready
+
+def ensure_user(user_data: dict, chat_id: int) -> dict:
+    key = str(chat_id)
+    if key not in user_data:
+        user_data[key] = {"chat_id": chat_id, "state": "awaiting_gender"}
+    if "chat_id" not in user_data[key]:
+        user_data[key]["chat_id"] = chat_id
+    if "state" not in user_data[key]:
+        user_data[key]["state"] = "awaiting_gender"
+    return user_data[key]
+
+
+def handle_one_shot(user_data: dict, chat_id: int, text: str) -> bool:
+    m = ONE_SHOT_RE.match(text)
+    if not m:
+        return False
+
+    g_code, c_code, size, pmin, pmax = m.groups()
+    prefs = ensure_user(user_data, chat_id)
+
+    prefs["gender"] = map_gender(g_code)
+    prefs["category"] = map_category(c_code)
+    prefs["size"] = str(int(size))
+    prefs["price_min"] = int(pmin)
+    prefs["price_max"] = int(pmax)
+    prefs["state"] = "ready"
+
+    send_message(
+        chat_id,
+        "✅ נשמר!\n\n"
+        f"מגדר: <b>{prefs['gender']}</b>\n"
+        f"סוג מוצר: <b>{prefs['category']}</b>\n"
+        f"מידה: <b>{prefs['size']}</b>\n"
+        f"טווח: <b>{prefs['price_min']}-{prefs['price_max']}</b>\n\n"
+        "תתחיל לקבל עדכונים אוטומטית בשעות 07:00 ו-19:00 (שעון ישראל)."
+    )
+    return True
+
+
+def handle_step_by_step(user_data: dict, chat_id: int, text: str) -> None:
+    prefs = ensure_user(user_data, chat_id)
+    state = prefs.get("state", "awaiting_gender")
+
+    # התחלה מחדש
+    if text.strip().lower() in ["/start", "start", "start/", "/restart"]:
+        prefs["state"] = "awaiting_gender"
+        send_message(chat_id, welcome_text())
+        send_message(chat_id, "בחר מגדר: 1-גברים, 2-נשים, 3-ילדים")
+        return
+
+    if text.strip().lower() == "/stat":
+        send_message(chat_id, stat_text(user_data))
+        return
+
+    # אם הגיעו הודעות בפורמט "one shot", נטפל בזה כאן (גם בתוך step flow)
+    if handle_one_shot(user_data, chat_id, text):
+        return
+
+    # זרימה ישנה
+    if state == "awaiting_gender":
+        if text.strip() in ["1", "2", "3"]:
+            prefs["gender"] = map_gender(text.strip())
+            prefs["state"] = "awaiting_category"
+            send_message(chat_id, "סוג מוצר: A-הנעלה, B-ביגוד, C-גם וגם")
+        else:
+            send_message(chat_id, "אנא בחר מגדר: 1-גברים, 2-נשים, 3-ילדים")
+        return
+
+    if state == "awaiting_category":
+        c = text.strip().upper()
+        if c in ["A", "B", "C"]:
+            prefs["category"] = map_category(c)
+            prefs["state"] = "awaiting_size"
+            send_message(chat_id, "אנא הזן מידה (לדוגמה 43)")
+        else:
+            send_message(chat_id, "אנא בחר: A-הנעלה, B-ביגוד, C-גם וגם")
+        return
+
+    if state == "awaiting_size":
+        if text.strip().isdigit():
+            prefs["size"] = str(int(text.strip()))
+            prefs["state"] = "awaiting_price_min"
+            send_message(chat_id, "אנא הזן מחיר מינימלי (לדוגמה 0)")
+        else:
+            send_message(chat_id, "מידה לא תקינה. נסה שוב (מספר בלבד).")
+        return
+
+    if state == "awaiting_price_min":
+        if text.strip().isdigit():
+            prefs["price_min"] = int(text.strip())
+            prefs["state"] = "awaiting_price_max"
+            send_message(chat_id, "אנא הזן מחיר מקסימלי (לדוגמה 300)")
+        else:
+            send_message(chat_id, "מחיר מינימלי לא תקין. נסה שוב (מספר בלבד).")
+        return
+
+    if state == "awaiting_price_max":
+        if text.strip().isdigit():
+            prefs["price_max"] = int(text.strip())
+            # נוודא מינימום <= מקסימום
+            if prefs["price_min"] > prefs["price_max"]:
+                prefs["price_min"], prefs["price_max"] = prefs["price_max"], prefs["price_min"]
+            prefs["state"] = "ready"
+            send_message(
+                chat_id,
+                "✅ נשמר!\n\n"
+                f"מגדר: <b>{prefs.get('gender')}</b>\n"
+                f"סוג מוצר: <b>{prefs.get('category')}</b>\n"
+                f"מידה: <b>{prefs.get('size')}</b>\n"
+                f"טווח: <b>{prefs.get('price_min')}-{prefs.get('price_max')}</b>\n\n"
+                "תתחיל לקבל עדכונים אוטומטית בשעות 07:00 ו-19:00 (שעון ישראל).\n"
+                "אם תרצה לעדכן הכל בהודעה אחת, שלח לדוגמה: <code>1 A 43 128 299</code>"
+            )
+        else:
+            send_message(chat_id, "מחיר מקסימלי לא תקין. נסה שוב (מספר בלבד).")
+        return
+
+    # ready
+    send_message(
+        chat_id,
+        "אני כבר מוגדר ומוכן. כדי לעדכן הגדרות שלח שוב הודעה בפורמט:\n"
+        "<code>1 A 43 128 299</code>\n"
+        "או שלח /start כדי להתחיל מחדש."
+    )
+
+
+# ---------------- Telegram polling ----------------
+
+def get_updates(offset=None):
+    url = tg_api_url("getUpdates")
+    params = {}
+    if offset is not None:
+        params["offset"] = offset
+    if ENABLE_DEBUG_LOGS:
+        print(f"Calling getUpdates with params: {params}")
+    resp = requests.get(url, params=params, timeout=30)
+    if ENABLE_DEBUG_LOGS:
+        print(f"getUpdates HTTP status: {resp.status_code}")
+    data = resp.json()
+    if not data.get("ok"):
+        raise RuntimeError(f"Telegram error: {data}")
+    return data.get("result", [])
+
+
+def extract_message(update: dict):
+    msg = update.get("message") or update.get("edited_message")
+    if not msg:
+        return None, None
+    chat = msg.get("chat", {})
+    chat_id = chat.get("id")
+    text = msg.get("text", "")
+    return chat_id, text
 
 
 def main():
     print("=== telegram_onboarding.py starting ===")
-
     if not BOT_TOKEN:
-        print("ERROR: TELEGRAM_BOT_TOKEN is not set in environment!")
-        return
+        raise RuntimeError("TELEGRAM_BOT_TOKEN is not set")
 
-    user_data = load_json(USER_DATA_FILE, {})
-    offset_data = load_json(OFFSET_FILE, {"last_update_id": None})
-    last_update_id = offset_data.get("last_update_id")
+    user_data = load_user_data()
+    last_update_id = load_last_update_id()
 
-    params = {}
-    if last_update_id is not None:
-        params["offset"] = last_update_id + 1
-
-    print("Calling getUpdates with params:", params)
-
-    try:
-        resp = requests.get(telegram_url("getUpdates"), params=params, timeout=20)
-    except Exception as e:
-        print("Error calling getUpdates:", e)
-        return
-
-    print("getUpdates HTTP status:", resp.status_code)
-    try:
-        data = resp.json()
-    except Exception as e:
-        print("Error decoding JSON from getUpdates:", e)
-        return
-
-    if not data.get("ok"):
-        print("Error from Telegram (ok=false):", data)
-        return
-
-    updates = data.get("result", [])
+    updates = get_updates(offset=(last_update_id + 1) if isinstance(last_update_id, int) else None)
     print(f"getUpdates returned {len(updates)} updates")
 
-    if not updates:
-        print("No new updates.")
-        return
+    new_last_update_id = last_update_id
 
-    max_update_id = last_update_id or 0
+    for upd in updates:
+        upd_id = upd.get("update_id")
+        if isinstance(upd_id, int):
+            new_last_update_id = upd_id if (new_last_update_id is None or upd_id > new_last_update_id) else new_last_update_id
 
-    for update in updates:
-        u_id = update["update_id"]
-        if u_id > max_update_id:
-            max_update_id = u_id
-
-        message = update.get("message") or update.get("edited_message")
-        if not message:
+        chat_id, text = extract_message(upd)
+        if not chat_id:
             continue
 
-        chat = message.get("chat", {})
-        chat_id = chat.get("id")
-        text = message.get("text", "")
+        text = text or ""
+        print(f"handle_message: chat_id={chat_id}, text={repr(text)}")
 
-        if not chat_id or not text:
-            continue
+        try:
+            # תמיכה גם ב-/start וגם ב-flow/one-shot
+            if text.strip().lower() == "/start":
+                prefs = ensure_user(user_data, chat_id)
+                prefs["state"] = "awaiting_gender"
+                send_message(chat_id, welcome_text())
+                send_message(chat_id, "בחר מגדר: 1-גברים, 2-נשים, 3-ילדים")
+            elif text.strip().lower() == "/stat":
+                send_message(chat_id, stat_text(user_data))
+            else:
+                handle_step_by_step(user_data, chat_id, text)
+        except Exception as e:
+            if ENABLE_DEBUG_LOGS:
+                print(f"Error handling message for chat_id={chat_id}: {e}")
+            send_message(chat_id, "אירעה שגיאה בעיבוד ההודעה. נסה שוב או שלח /start.")
 
-        handle_message(chat_id, text, user_data)
+    # שמירה
+    save_user_data(user_data)
+    if isinstance(new_last_update_id, int):
+        save_last_update_id(new_last_update_id)
 
-    save_json(OFFSET_FILE, {"last_update_id": max_update_id})
-    print("Onboarding sync done. New last_update_id:", max_update_id)
+    print(f"Onboarding sync done. New last_update_id: {new_last_update_id}")
 
 
 if __name__ == "__main__":
