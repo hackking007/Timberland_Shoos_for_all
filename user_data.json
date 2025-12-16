@@ -1,1 +1,12 @@
-{}
+{
+  "582913726": {
+    "chat_id": 582913726,
+    "state": "ready",
+    "gender": "men",
+    "category": "shoes",
+    "size": "43",
+    "price_min": 128,
+    "price_max": 299
+  }
+}
+
