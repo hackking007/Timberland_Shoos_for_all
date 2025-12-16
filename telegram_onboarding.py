@@ -9,7 +9,6 @@ OFFSET_FILE = "last_update_id.json"
 
 
 def telegram_url(method: str) -> str:
-    """בונה URL לקריאה ל-Telegram API."""
     return f"https://api.telegram.org/bot{BOT_TOKEN}/{method}"
 
 
@@ -43,53 +42,94 @@ def send_message(chat_id, text):
         print(f"Error sending message to {chat_id}: {e}")
 
 
-def ask_gender(chat_id):
+def send_instructions(chat_id):
     text = (
         "ברוך הבא לבוט טימברלנד 👟\n\n"
-        "בחר קטגוריית קהל היעד:\n"
-        "1 - גברים\n"
-        "2 - נשים\n"
-        "3 - ילדים"
+        "כדי להגדיר מעקב בהודעה אחת, אנא שלח הודעה בפורמט הבא:\n\n"
+        "מגדר, סוג מוצרים, מידה, מחיר מינימלי, מחיר מקסימלי\n\n"
+        "קידודים:\n"
+        "מגדר: 1=גברים, 2=נשים, 3=ילדים\n"
+        "סוג מוצרים: A=הנעלה, B=ביגוד, C=גם וגם\n\n"
+        "לדוגמה:\n"
+        "1 A 43 0 300\n"
+        "זה אומר: גברים, הנעלה, מידה 43, מחיר 0 עד 300.\n\n"
+        "שלח עכשיו הודעה אחת בפורמט הזה 🙂"
     )
-    send_message(chat_id, text)
-
-
-def ask_category(chat_id):
-    text = (
-        "מה תרצה לעקוב?\n"
-        "1 - הנעלה בלבד\n"
-        "2 - ביגוד בלבד\n"
-        "3 - גם וגם"
-    )
-    send_message(chat_id, text)
-
-
-def ask_size(chat_id):
-    text = "הקלד את המידה שלך (למשל: 43):"
-    send_message(chat_id, text)
-
-
-def ask_price_min(chat_id):
-    text = "הקלד מחיר מינימלי (למשל: 0):"
-    send_message(chat_id, text)
-
-
-def ask_price_max(chat_id):
-    text = "הקלד מחיר מקסימלי (למשל: 300):"
     send_message(chat_id, text)
 
 
 def confirm_preferences(chat_id, prefs):
+    gender_map_he = {"men": "גברים", "women": "נשים", "kids": "ילדים"}
+    category_map_he = {
+        "shoes": "הנעלה",
+        "clothing": "ביגוד",
+        "both": "הנעלה + ביגוד"
+    }
+
     text = (
         "הגדרות המעקב שלך נשמרו ✅\n\n"
-        f"קטגוריית קהל היעד: {prefs.get('gender')}\n"
-        f"סוג מוצרים: {prefs.get('category')}\n"
+        f"קטגוריית קהל היעד: {gender_map_he.get(prefs.get('gender'), prefs.get('gender'))}\n"
+        f"סוג מוצרים: {category_map_he.get(prefs.get('category'), prefs.get('category'))}\n"
         f"מידה: {prefs.get('size')}\n"
         f"מחיר: {prefs.get('price_min')} - {prefs.get('price_max')}\n\n"
         "מהיום תקבל התראות בהתאם להגדרות האלו 🚀\n"
-        "כדי לעדכן הגדרות בכל רגע - שלח /start"
+        "כדי לעדכן הגדרות בכל רגע - שלח /start וענה שוב בפורמט החדש."
     )
     send_message(chat_id, text)
+
+
+def parse_combined_message(text):
+    """
+    מצפה לפורמט:
+    gender category size price_min price_max
+    לדוגמה: 1 A 43 0 300
+    מחזיר dict עם הערכים או None אם לא תקין.
+    """
+    # מחליף פסיקים ברווחים, מפרק לפי רווח
+    clean = text.replace(",", " ")
+    parts = [p for p in clean.split() if p]
+
+    if len(parts) != 5:
+        return None, "אנא הזן בדיוק 5 ערכים, לדוגמה: 1 A 43 0 300"
+
+    gender_raw, category_raw, size_raw, price_min_raw, price_max_raw = parts
+
+    # מגדר
+    if gender_raw not in ("1", "2", "3"):
+        return None, "מגדר לא תקין. השתמש ב-1 לגברים, 2 לנשים, 3 לילדים."
+
+    gender_map = {"1": "men", "2": "women", "3": "kids"}
+    gender = gender_map[gender_raw]
+
+    # קטגוריה
+    category_raw_upper = category_raw.upper()
+    if category_raw_upper not in ("A", "B", "C"):
+        return None, "סוג מוצרים לא תקין. השתמש ב-A להנעלה, B לביגוד, C גם וגם."
+
+    category_map = {"A": "shoes", "B": "clothing", "C": "both"}
+    category = category_map[category_raw_upper]
+
+    # מידה - נשמור כטקסט, אתה כבר תמפה ל-size_id בטימברלנד
+    size = size_raw
+
+    # מחירים
+    if not (price_min_raw.isdigit() and price_max_raw.isdigit()):
+        return None, "מחירים חייבים להיות מספרים בלבד. לדוגמה: 0 300"
+
+    price_min = int(price_min_raw)
+    price_max = int(price_max_raw)
+
+    if price_min > price_max:
+        return None, "המחיר המינימלי לא יכול להיות גדול מהמחיר המקסימלי."
+
+    prefs = {
+        "gender": gender,
+        "category": category,
+        "size": size,
+        "price_min": price_min,
+        "price_max": price_max,
+    }
+    return prefs, None
 
 
 def handle_message(chat_id, text, user_data):
@@ -98,90 +138,50 @@ def handle_message(chat_id, text, user_data):
 
     print(f"handle_message: chat_id={chat_id_str}, text={text!r}")
 
-    # משתמש חדש - יצירת רשומה והתחלת שאלון
+    # אם אין משתמש - ניצור לו רשומה ונבקש הודעה משולבת
     if chat_id_str not in user_data:
-        print(f"New user detected: {chat_id_str}")
         user_data[chat_id_str] = {
-            "state": "awaiting_gender",
+            "state": "awaiting_combined",
             "gender": None,
             "category": None,
             "size": None,
             "price_min": None,
             "price_max": None
         }
-        ask_gender(chat_id)
+        send_instructions(chat_id)
         return
 
     user = user_data[chat_id_str]
-    state = user.get("state", "awaiting_gender")
+    state = user.get("state", "awaiting_combined")
     print(f"Existing user state={state}")
 
     # התחלה מחדש
     if text == "/start":
-        print(f"Resetting user {chat_id_str} to start state")
         user.update({
-            "state": "awaiting_gender",
+            "state": "awaiting_combined",
             "gender": None,
             "category": None,
             "size": None,
             "price_min": None,
             "price_max": None
         })
-        ask_gender(chat_id)
+        send_instructions(chat_id)
         return
 
-    if state == "awaiting_gender":
-        if text == "1":
-            user["gender"] = "men"
-        elif text == "2":
-            user["gender"] = "women"
-        elif text == "3":
-            user["gender"] = "kids"
-        else:
-            send_message(chat_id, "אנא בחר 1, 2 או 3.")
+    if state == "awaiting_combined":
+        prefs, error = parse_combined_message(text)
+        if error:
+            send_message(chat_id, error + "\n\nנסה שוב בפורמט לדוגמה: 1 A 43 0 300")
             return
 
-        user["state"] = "awaiting_category"
-        ask_category(chat_id)
-
-    elif state == "awaiting_category":
-        if text == "1":
-            user["category"] = "shoes"
-        elif text == "2":
-            user["category"] = "clothing"
-        elif text == "3":
-            user["category"] = "both"
-        else:
-            send_message(chat_id, "אנא בחר 1, 2 או 3.")
-            return
-
-        user["state"] = "awaiting_size"
-        ask_size(chat_id)
-
-    elif state == "awaiting_size":
-        user["size"] = text
-        user["state"] = "awaiting_price_min"
-        ask_price_min(chat_id)
-
-    elif state == "awaiting_price_min":
-        if not text.isdigit():
-            send_message(chat_id, "אנא הקלד מספר בלבד (למשל 0).")
-            return
-        user["price_min"] = int(text)
-        user["state"] = "awaiting_price_max"
-        ask_price_max(chat_id)
-
-    elif state == "awaiting_price_max":
-        if not text.isdigit():
-            send_message(chat_id, "אנא הקלד מספר בלבד (למשל 300).")
-            return
-        user["price_max"] = int(text)
+        # שמירת ההעדפות
+        user.update(prefs)
         user["state"] = "ready"
         confirm_preferences(chat_id, user)
+        return
 
-    else:
-        # משתמש שסיים onboarding
-        send_message(chat_id, "אתה כבר רשום. שלח /start כדי לעדכן הגדרות.")
+    # כבר ready
+    send_message(chat_id, "אתה כבר רשום. שלח /start כדי לעדכן הגדרות.")
 
 
 def main():
