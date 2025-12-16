@@ -17,6 +17,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: timberland-state
+          path: .              # <<< חשוב: לשפוך לשורש הריפו
         continue-on-error: true   # אם אין artifact עדיין, לא נכשלים
 
       - name: Set up Python
@@ -41,4 +42,3 @@ jobs:
           path: |
             user_data.json
             last_update_id.json
-            state.json
