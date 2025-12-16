@@ -1,8 +1,11 @@
+# config.py
 # הגדרות הבוט
 import os
 
 # --- טלגרם ---
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "").strip()  # חובה
+# תמיכה גם ב-TELEGRAM_BOT_TOKEN (מה-workflow החדש) וגם ב-TELEGRAM_TOKEN (מהקיים)
+TELEGRAM_TOKEN = (os.getenv("TELEGRAM_BOT_TOKEN") or os.getenv("TELEGRAM_TOKEN") or "").strip()  # חובה
+
 # תמיכה גם ב-ADMIN_CHAT_ID וגם ב-CHAT_ID (לא חובה)
 _admin_env = os.getenv("ADMIN_CHAT_ID", "").strip() or os.getenv("CHAT_ID", "").strip()
 ADMIN_CHAT_ID = int(_admin_env) if _admin_env.isdigit() else None
@@ -14,6 +17,7 @@ LOAD_MORE_DELAY = 1500         # ms
 
 # --- קבצים ---
 USER_DATA_FILE = "user_data.json"
+LAST_UPDATE_ID_FILE = "last_update_id.json"   # חדש - חובה ל-onboarding (offset ל-getUpdates)
 STATE_FILE = "shoes_state.json"
 SIZE_MAP_FILE = "size_map.json"
 
