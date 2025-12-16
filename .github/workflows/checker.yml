@@ -2,22 +2,22 @@ name: Timberland Checker
 
 on:
   schedule:
-    - cron: "0 */12 * * *"  # כל 12 שעות
-  workflow_dispatch:
+    - cron: "0 */12 * * *"   # ריצה כל 12 שעות
+  workflow_dispatch:         # מאפשר להריץ ידנית מה-GitHub Actions
 
 jobs:
   checker:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repo
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Download state artifact if exists
+      - name: Download previous state (if exists)
         uses: actions/download-artifact@v4
         with:
           name: timberland-state
-        continue-on-error: true
+        continue-on-error: true   # אם אין artifact עדיין - ממשיכים
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -28,16 +28,21 @@ jobs:
         run: |
           pip install -r requirements.txt
 
+      - name: Install Playwright browsers
+        run: |
+          python -m playwright install --with-deps chromium
+
       - name: Run Timberland checker
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
         run: |
           python timberland_checker.py
 
-      - name: Upload state artifact
+      - name: Upload state files
         uses: actions/upload-artifact@v4
         with:
           name: timberland-state
           path: |
             user_data.json
             last_update_id.json
+            state.json
