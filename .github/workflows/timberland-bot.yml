@@ -2,50 +2,57 @@ name: Timberland Bot
 
 on:
   schedule:
-    # הבוט רץ כל 30 דקות - בכל ריצה:
-    # 1) עושה onboarding למשתמשים חדשים
-    # 2) מריץ checker רק בשעות שנקבעו (בתוך הקוד)
+    # ריצה כל 30 דקות:
+    # - onboarding תמיד רץ
+    # - checker ירוץ רק בשעות שהוגדרו בקוד (07:00 / 19:00)
     - cron: "*/30 * * * *"
-  workflow_dispatch:         # הפעלה ידנית לפי הצורך
+  workflow_dispatch:  # מאפשר הרצה ידנית
 
 jobs:
   run-bot:
     runs-on: ubuntu-latest
 
     steps:
+      # ---------------- Checkout ----------------
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      # ---------------- Load shared state ----------------
       - name: Download previous state (if exists)
         uses: actions/download-artifact@v4
         with:
           name: timberland-state
-          path: .              # חשוב: לשפוך את ה־state לשורש הריפו
+          path: .   # חשוב - דריסה של user_data.json מה-artifact
         continue-on-error: true
 
+      # ---------------- Python ----------------
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
+      # ---------------- Dependencies ----------------
       - name: Install dependencies
         run: |
           pip install -r requirements.txt
           pip install playwright
           playwright install chromium
 
+      # ---------------- Telegram onboarding ----------------
       - name: Run Telegram onboarding
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
         run: |
           python telegram_onboarding.py
 
-      - name: Run Timberland checker (only at send hours)
+      # ---------------- Timberland checker ----------------
+      - name: Run Timberland checker
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
         run: |
           python timberland_checker.py
 
+      # ---------------- Save shared state ----------------
       - name: Upload updated state files
         uses: actions/upload-artifact@v4
         with:
