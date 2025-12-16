@@ -3,12 +3,12 @@ import json
 import requests
 from bs4 import BeautifulSoup
 from playwright.sync_api import sync_playwright
-from config import *  # משתמש בכל ה-STATE_FILE, USER_DATA_FILE, SIZE_MAP_FILE, CATEGORIES וכו'
+from config import *
 
 # ---------------- Telegram helpers ----------------
 
-# נעדיף את ה-TOKEN מה-ENV (שמגיע מה-GitHub Secret), ואם אין - ניפול ל-TELEGRAM_TOKEN מה-config
-BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", None) or TELEGRAM_TOKEN
+# נשתמש בטוקן מה־env אם קיים, אחרת מה־config
+BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN") or TELEGRAM_TOKEN
 
 
 def send_telegram_message(text, chat_id=None):
@@ -21,7 +21,9 @@ def send_telegram_message(text, chat_id=None):
         "disable_web_page_preview": True,
     }
     try:
-        requests.post(url, data=payload, timeout=30)
+        resp = requests.post(url, data=payload, timeout=30)
+        if ENABLE_DEBUG_LOGS:
+            print(f"send_telegram_message -> {resp.status_code} {resp.text[:200]}")
     except Exception as e:
         if ENABLE_DEBUG_LOGS:
             print(f"Error sending message: {e}")
@@ -37,7 +39,9 @@ def send_photo_with_caption(image_url, caption, chat_id=None):
         "parse_mode": "Markdown",
     }
     try:
-        requests.post(url, data=payload, timeout=30)
+        resp = requests.post(url, data=payload, timeout=30)
+        if ENABLE_DEBUG_LOGS:
+            print(f"send_photo_with_caption -> {resp.status_code} {resp.text[:200]}")
     except Exception as e:
         if ENABLE_DEBUG_LOGS:
             print(f"Error sending photo: {e}")
@@ -51,7 +55,9 @@ def load_previous_state():
             return json.load(f)
     except FileNotFoundError:
         return {}
-    except Exception:
+    except Exception as e:
+        if ENABLE_DEBUG_LOGS:
+            print(f"Error loading STATE_FILE: {e}")
         return {}
 
 
@@ -61,30 +67,18 @@ def save_current_state(state):
             json.dump(state, f, ensure_ascii=False, indent=2)
     except Exception as e:
         if ENABLE_DEBUG_LOGS:
-            print(f"Error saving state: {e}")
+            print(f"Error saving STATE_FILE: {e}")
 
 
 def load_user_preferences():
-    """
-    user_data.json בפורמט החדש:
-    {
-      "123456": {
-         "state": "ready",
-         "gender": "men",
-         "category": "shoes" | "clothing" | "both",
-         "size": "43",
-         "price_min": 0,
-         "price_max": 300
-      },
-      ...
-    }
-    """
     try:
         with open(USER_DATA_FILE, "r", encoding="utf-8") as f:
             return json.load(f)
     except FileNotFoundError:
         return {}
-    except Exception:
+    except Exception as e:
+        if ENABLE_DEBUG_LOGS:
+            print(f"Error loading USER_DATA_FILE: {e}")
         return {}
 
 
@@ -93,117 +87,104 @@ def load_size_mapping():
         with open(SIZE_MAP_FILE, "r", encoding="utf-8") as f:
             return json.load(f)
     except FileNotFoundError:
-        # ברירת מחדל אם הקובץ לא קיים
+        # ברירת מחדל ליתר ביטחון
         return {
             "men": {"40": 791, "41": 792, "42": 793, "43": 794, "44": 795, "45": 796},
             "women": {"36": 798, "37": 799, "38": 800, "39": 801, "40": 802, "41": 803},
-            "kids": {
-                "28": 230,
-                "29": 231,
-                "30": 232,
-                "31": 233,
-                "32": 234,
-                "33": 235,
-                "34": 236,
-                "35": 237,
-            },
+            "kids": {"28": 230, "29": 231, "30": 232, "31": 233, "32": 234, "33": 235, "34": 236, "35": 237},
         }
-    except Exception:
+    except Exception as e:
+        if ENABLE_DEBUG_LOGS:
+            print(f"Error loading SIZE_MAP_FILE: {e}")
         return {}
 
 
 def size_to_code(size, gender):
-    """
-    size: מחרוזת מידה (למשל "43")
-    gender: "men" / "women" / "kids"
-    """
     size_mapping = load_size_mapping()
     return str(size_mapping.get(gender, {}).get(str(size), ""))
 
 
-def build_url_for_user(gender, size, price_min, price_max):
+def category_to_url(gender, size, price_min, price_max):
     """
     gender: men / women / kids
-    size: מחרוזת מידה
-    price_min / price_max: מספרים (int)
-    משתמש ב-CATEGORIES מה-config (בדומה לקוד הישן שלך)
+    size: למשל "40"
+    price_min, price_max: מספרים
     """
     if gender not in CATEGORIES:
         return None
 
-    base_url = CATEGORIES[gender]["url"]  # לדוגמה: URL לנעלי גברים באתר
+    base_url = CATEGORIES[gender]["url"]
     size_code = size_to_code(size, gender)
     if not size_code:
         return None
 
-    price_param = f"{price_min}_{price_max}"  # למשל 0_300
+    price_param = f"{price_min}_{price_max}"
     return f"{base_url}?price={price_param}&size={size_code}&product_list_order=low_to_high"
 
 
 # ---------------- Main logic ----------------
 
-def run_checker():
+def check_shoes():
+    from datetime import datetime
+
     if ENABLE_DEBUG_LOGS:
-        from datetime import datetime
         print(f"[{datetime.now()}] Starting shoe check...")
+        print(f"BOT_TOKEN length: {len(BOT_TOKEN) if BOT_TOKEN else 0}")
 
     previous_state = load_previous_state()
     current_state = {}
     user_data = load_user_preferences()
 
+    if ENABLE_DEBUG_LOGS:
+        print(f"user_data loaded: {json.dumps(user_data, ensure_ascii=False, indent=2)}")
+
     if not user_data:
         if ENABLE_DEBUG_LOGS:
-            print("No registered users found.")
+            print("No registered users found in user_data.json")
         if ENABLE_ADMIN_NOTIFICATIONS:
-            send_telegram_message("⚠️ אין משתמשים רשומים.")
+            send_telegram_message("⚠️ אין משתמשים רשומים ב user_data.json.")
         return
 
     if ENABLE_DEBUG_LOGS:
         print(f"Found {len(user_data)} registered users.")
 
     for user_id, prefs in user_data.items():
-        state = prefs.get("state")
-        if state != "ready":
-            if ENABLE_DEBUG_LOGS:
-                print(f"Skipping user {user_id} because state={state}")
-            continue
-
-        # מה-onboarding החדש
-        gender = prefs.get("gender", "men")       # men / women / kids
-        product_type = prefs.get("category", "shoes")  # shoes / clothing / both (כרגע רק ללוג/להמשך)
+        # הפורמט החדש מה-onboarding
+        gender = prefs.get("gender", "men")          # men / women / kids
+        category = prefs.get("category", "shoes")    # כרגע לא משפיע על ה-URL, אבל נשמור לעתיד
         size = prefs.get("size", "43")
         price_min = prefs.get("price_min", 0)
         price_max = prefs.get("price_max", 300)
-        chat_id = prefs.get("chat_id", user_id)  # אם בעתיד נרצה chat_id שונה
-
-        url = build_url_for_user(gender, size, price_min, price_max)
-
-        if ENABLE_ADMIN_NOTIFICATIONS:
-            debug_msg = (
-                f"🔍 *בודק למשתמש:* `{user_id}`\n"
-                f"מגדר: {gender} | סוג מוצר: {product_type} | מידה: {size} | טווח: {price_min}-{price_max}\n\n{url}"
-            )
-            send_telegram_message(debug_msg)
+        chat_id = prefs.get("chat_id", user_id)
 
         if ENABLE_DEBUG_LOGS:
             print(
-                f"Checking for user {user_id}: gender={gender}, "
-                f"type={product_type}, size={size}, price={price_min}-{price_max}"
+                f"Processing user {user_id}: gender={gender}, category={category}, "
+                f"size={size}, price={price_min}-{price_max}, chat_id={chat_id}"
             )
+
+        url = category_to_url(gender, size, price_min, price_max)
+
+        if ENABLE_ADMIN_NOTIFICATIONS:
+            debug_msg = (
+                f"🔍 *בדיקת מוצרים למשתמש* `{user_id}`\n"
+                f"מגדר: {gender} | סוג מוצר: {category}\n"
+                f"מידה: {size} | טווח: {price_min}-{price_max}\n\n"
+                f"URL:\n{url or 'N/A'}"
+            )
+            send_telegram_message(debug_msg)
 
         if not url:
             if ENABLE_DEBUG_LOGS:
-                print(f"Error generating URL for user {user_id}")
+                print(f"Error generating URL for user {user_id} (gender={gender}, size={size})")
             if ENABLE_ADMIN_NOTIFICATIONS:
-                send_telegram_message(
-                    f"❌ שגיאה ביצירת URL למשתמש `{user_id}`", chat_id=chat_id
-                )
+                send_telegram_message(f"❌ שגיאה ביצירת URL למשתמש `{user_id}`", chat_id=chat_id)
             continue
 
         try:
             with sync_playwright() as p:
                 if ENABLE_DEBUG_LOGS:
-                    print(f"Launching browser for user {user_id}...")
+                    print(f"Launching browser for user {user_id} - URL: {url}")
                 browser = p.chromium.launch(headless=True)
                 context = browser.new_context(locale="he-IL")
                 page = context.new_page()
@@ -227,7 +208,8 @@ def run_checker():
                             print(f"Error loading more products: {str(e)}")
                         break
 
-                soup = BeautifulSoup(page.content(), "html.parser")
+                html = page.content()
+                soup = BeautifulSoup(html, "html.parser")
                 product_cards = soup.select("div.product")
                 if ENABLE_DEBUG_LOGS:
                     print(f"Found {len(product_cards)} products for user {user_id}")
@@ -240,16 +222,8 @@ def run_checker():
                     img_tag = card.select_one("img")
                     price_tags = card.select("span.price")
 
-                    title = (
-                        img_tag["alt"].strip()
-                        if img_tag and img_tag.has_attr("alt")
-                        else "ללא שם"
-                    )
-                    link = (
-                        link_tag["href"]
-                        if link_tag and link_tag.has_attr("href")
-                        else None
-                    )
+                    title = img_tag["alt"].strip() if img_tag and img_tag.has_attr("alt") else "ללא שם"
+                    link = link_tag["href"] if link_tag and link_tag.has_attr("href") else None
                     if not link:
                         continue
                     if not link.startswith("http"):
@@ -260,12 +234,7 @@ def run_checker():
                     prices = []
                     for tag in price_tags:
                         try:
-                            text = (
-                                tag.text.strip()
-                                .replace("\xa0", "")
-                                .replace("₪", "")
-                                .replace(",", "")
-                            )
+                            text = tag.text.strip().replace("\xa0", "").replace("₪", "").replace(",", "")
                             price_val = float(text)
                             if price_val > 0:
                                 prices.append(price_val)
@@ -294,6 +263,7 @@ def run_checker():
                         }
                     )
 
+                    # שליחה פר-item רק לחדשים
                     if key not in previous_state:
                         caption = f"*{title}* - ₪{int(price_val)}\n[לינק למוצר]({link})"
                         try:
@@ -307,50 +277,38 @@ def run_checker():
                             new_products += 1
                         except Exception as e:
                             if ENABLE_DEBUG_LOGS:
-                                print(
-                                    f"Failed to send photo message to user {user_id}: {str(e)}"
-                                )
+                                print(f"Failed to send photo message to user {user_id}: {str(e)}")
 
                 # סיכום מרוכז
                 if all_items:
                     all_items.sort(key=lambda x: x["price"])
                     subset = all_items[:15]
                     header = (
-                        f"*👟 תוצאות עדכניות* — {gender}, מידה {size}, "
-                        f"טווח {price_min}-{price_max}\n"
+                        f"*👟 תוצאות עדכניות* — {gender}, מידה {size}, טווח {price_min}-{price_max}\n"
                     )
                     lines = []
                     for i, it in enumerate(subset, 1):
                         mark = "🆕 " if it["is_new"] else ""
-                        lines.append(
-                            f"{i}. {mark}*{it['title'][:60]}* — ₪{int(it['price'])}\n{it['link']}"
-                        )
+                        lines.append(f"{i}. {mark}*{it['title'][:60]}* — ₪{int(it['price'])}\n{it['link']}")
                     if len(all_items) > len(subset):
                         lines.append(f"\nועוד {len(all_items) - len(subset)} פריטים…")
                     lines.append(f"\n🔎 חיפוש: {url}")
                     msg = header + "\n".join(lines)
                     send_telegram_message(msg, chat_id=chat_id)
                     if ENABLE_DEBUG_LOGS:
-                        print(
-                            f"Sent summary to user {user_id} with {len(subset)} items "
-                            f"(total {len(all_items)})."
-                        )
+                        print(f"Sent summary to user {user_id} with {len(subset)} items (total {len(all_items)}).")
                 else:
                     send_telegram_message(
-                        f"*👟 לא נמצאו פריטים כרגע* — {gender}, מידה {size}, "
-                        f"טווח {price_min}-{price_max}\n\n🔎 {url}",
+                        f"*👟 לא נמצאו פריטים כרגע* — {gender}, מידה {size}, טווח {price_min}-{price_max}\n\n🔎 {url}",
                         chat_id=chat_id,
                     )
                     if ENABLE_DEBUG_LOGS:
-                        print(
-                            f"No items found for user {user_id}, sent empty summary."
-                        )
+                        print(f"No items found for user {user_id}, sent empty summary.")
 
                 browser.close()
                 if ENABLE_DEBUG_LOGS:
                     print(
-                        f"Completed scan for user {user_id} "
-                        f"(new={new_products}, total={len(all_items)})"
+                        f"Completed scan for user {user_id} (new={new_products}, total={len(all_items)})"
                     )
 
         except Exception as e:
@@ -358,22 +316,19 @@ def run_checker():
                 print(f"Error scanning for user {user_id}: {str(e)}")
             if ENABLE_ADMIN_NOTIFICATIONS:
                 send_telegram_message(
-                    f"❌ שגיאה בסריקה למשתמש `{user_id}`: {str(e)}", chat_id=chat_id
+                    f"❌ שגיאה בסריקה למשתמש `{user_id}`: {str(e)}",
+                    chat_id=chat_id,
                 )
             continue
 
     save_current_state(current_state)
     if ENABLE_DEBUG_LOGS:
-        from datetime import datetime
-        print(
-            f"[{datetime.now()}] Shoe check completed. "
-            f"Stored {len(current_state)} items total."
-        )
+        print(f"Saved current_state with {len(current_state)} items total.")
 
 
 if __name__ == "__main__":
     try:
-        run_checker()
+        check_shoes()
     except KeyboardInterrupt:
         if ENABLE_DEBUG_LOGS:
             print("\nScan interrupted by user.")
