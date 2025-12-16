@@ -9,9 +9,10 @@ from datetime import datetime
 
 from config import *
 
-
+# ---------------- Token ----------------
 BOT_TOKEN = (os.getenv("TELEGRAM_BOT_TOKEN") or os.getenv("TELEGRAM_TOKEN") or TELEGRAM_TOKEN or "").strip()
 
+# ---------------- Telegram helpers (HTML mode) ----------------
 
 def send_telegram_message(text, chat_id=None, disable_preview=True):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
@@ -48,6 +49,7 @@ def send_photo_with_caption(image_url, caption_html, chat_id=None):
         if ENABLE_DEBUG_LOGS:
             print(f"send_photo_with_caption error: {e}")
 
+# ---------------- JSON helpers ----------------
 
 def load_json(path, default):
     try:
@@ -69,6 +71,7 @@ def save_json(path, data):
         if ENABLE_DEBUG_LOGS:
             print(f"save_json error for {path}: {e}")
 
+# ---------------- State / config helpers ----------------
 
 def load_previous_state():
     return load_json(STATE_FILE, {})
@@ -87,7 +90,9 @@ def load_size_mapping():
 
 
 def load_apparel_size_mapping():
-    return load_json(APPAREL_SIZE_MAP_FILE, {})
+    # אם הקובץ לא קיים - נחזיר ריק, וביגוד ירוץ בלי פילטר size
+    path = globals().get("APPAREL_SIZE_MAP_FILE", "apparel_size_map.json")
+    return load_json(path, {})
 
 
 def size_to_code(size, gender):
@@ -99,6 +104,7 @@ def apparel_size_to_code(apparel_size, gender):
     m = load_apparel_size_mapping()
     return str(m.get(gender, {}).get(str(apparel_size).upper(), ""))
 
+# ---------------- URL builders ----------------
 
 def build_shoes_url(gender, shoe_size, price_min, price_max):
     if gender not in CATEGORIES:
@@ -111,28 +117,48 @@ def build_shoes_url(gender, shoe_size, price_min, price_max):
 
 
 def build_clothing_url(gender, apparel_size, price_min, price_max):
+    """
+    גברים ביגוד עובד כך (דוגמה שלך):
+    https://www.timberland.co.il/men/clothing?price=68_1001&size=4
+
+    נשים כרגע: אם אין מוצרים/אין פילטר מידות - אין size_code.
+    במקרה כזה נריץ בלי size כדי לא "לשבור" ונקבל תוצאות אם יש מלאי לפי מחיר.
+    """
     if gender not in CLOTHING_URLS:
         return None
-    base_url = CLOTHING_URLS[gender]
-    size_code = apparel_size_to_code(apparel_size, gender)
-    if not size_code:
-        return None
 
-    # לפי הדוגמה שלך: men/clothing?price=68_1001&size=4
+    base_url = CLOTHING_URLS[gender]
+
+    # אם המשתמש לא נתן מידה לביגוד - נריץ בלי פילטר size
+    if not apparel_size:
+        return f"{base_url}?price={int(price_min)}_{int(price_max)}&product_list_order=low_to_high"
+
+    size_code = apparel_size_to_code(apparel_size, gender)
+
+    # אם אין מיפוי/אין פילטר (לדוגמה נשים כרגע) - ריצה בלי size
+    if not size_code:
+        return f"{base_url}?price={int(price_min)}_{int(price_max)}&product_list_order=low_to_high"
+
     return f"{base_url}?price={int(price_min)}_{int(price_max)}&size={size_code}&product_list_order=low_to_high"
 
+# ---------------- Scheduling guard ----------------
 
 def should_run_checker_now():
-    # סריקה רק ב-07:00 וב-19:00 שעון ישראל
+    """
+    הסריקה רצה רק ב-07:00 וב-19:00 שעון ישראל.
+    (ה-workflow יכול לרוץ כל 30 דקות, אבל checker ידלג אם זה לא חלון זמן).
+    """
     tz = ZoneInfo("Asia/Jerusalem")
     now = datetime.now(tz)
     send_hours = [7, 19]
+
     if now.minute != 0:
         return False, now
     if now.hour not in send_hours:
         return False, now
     return True, now
 
+# ---------------- Playwright scan ----------------
 
 def scan_url_with_playwright(url):
     with sync_playwright() as p:
@@ -165,6 +191,7 @@ def scan_url_with_playwright(url):
         browser.close()
         return product_cards
 
+# ---------------- Parsing products ----------------
 
 def extract_products(product_cards):
     items = []
@@ -191,16 +218,18 @@ def extract_products(product_cards):
                     prices.append(val)
             except Exception:
                 continue
+
         if not prices:
             continue
 
         price_val = min(prices)
         items.append({"title": title, "link": link, "price": price_val, "img_url": img_url})
+
     return items
 
+# ---------------- Send items ----------------
 
 def send_items_to_user(user_id, chat_id, kind_label, url, items, previous_state, current_state):
-    # שולח פוש רק לפריטים חדשים, וסיכום תמיד (בטוח HTML)
     new_count = 0
     all_items = []
 
@@ -244,6 +273,7 @@ def send_items_to_user(user_id, chat_id, kind_label, url, items, previous_state,
 
     return new_count, len(all_items)
 
+# ---------------- Main logic ----------------
 
 def check_shoes():
     ok, now = should_run_checker_now()
