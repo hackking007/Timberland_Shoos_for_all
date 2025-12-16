@@ -2,8 +2,8 @@ name: Timberland Checker
 
 on:
   schedule:
-    - cron: "0 */12 * * *"
-  workflow_dispatch:
+    - cron: "0 */12 * * *"   # ריצה פעמיים ביום
+  workflow_dispatch:         # גם הרצה ידנית
 
 jobs:
   run-checker:
@@ -17,7 +17,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: timberland-state
-          path: .            # גם כאן - לשורש
+          path: .              # חשוב: לשפוך לשורש הריפו, דריסה של user_data.json בקוד
         continue-on-error: true
 
       - name: Set up Python
