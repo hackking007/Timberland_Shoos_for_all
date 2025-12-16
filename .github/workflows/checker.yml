@@ -1,0 +1,43 @@
+name: Timberland Checker
+
+on:
+  schedule:
+    - cron: "0 */12 * * *"  # כל 12 שעות
+  workflow_dispatch:
+
+jobs:
+  checker:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Download state artifact if exists
+        uses: actions/download-artifact@v4
+        with:
+          name: timberland-state
+        continue-on-error: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+
+      - name: Run Timberland checker
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+        run: |
+          python timberland_checker.py
+
+      - name: Upload state artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: timberland-state
+          path: |
+            user_data.json
+            last_update_id.json
