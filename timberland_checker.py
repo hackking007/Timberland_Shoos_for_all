@@ -1,4 +1,5 @@
 # timberland_checker.py
+import os
 import json
 import requests
 import html
@@ -38,7 +39,7 @@ def send_message(chat_id: int, text: str):
         "disable_web_page_preview": True,
     }
     r = requests.post(url, data=payload, timeout=30)
-    log(f"send_message -> {r.status_code} {r.text[:120]}")
+    log(f"send_message -> {r.status_code} {r.text[:180]}")
     return r
 
 
@@ -51,7 +52,7 @@ def send_photo(chat_id: int, photo_url: str, caption: str):
         "parse_mode": "HTML",
     }
     r = requests.post(url, data=payload, timeout=30)
-    log(f"send_photo -> {r.status_code} {r.text[:120]}")
+    log(f"send_photo -> {r.status_code} {r.text[:180]}")
     return r
 
 
@@ -115,7 +116,6 @@ def build_clothing_url(gender: str, clothing_size: str, price_min: int, price_ma
 
 
 def extract_prices(text: str):
-    # Extract all floats from a messy string containing ₪, sale/original prices, etc.
     vals = []
     cur = ""
     for ch in text:
@@ -148,7 +148,6 @@ def scrape_products(url: str):
         page = context.new_page()
         page.goto(url, timeout=SCAN_TIMEOUT)
 
-        # try "load more" if exists
         clicks = 0
         while clicks < MAX_LOAD_MORE_CLICKS:
             try:
@@ -163,7 +162,6 @@ def scrape_products(url: str):
 
         soup = BeautifulSoup(page.content(), "html.parser")
 
-        # Try different product selectors (Magento-like)
         cards = soup.select("li.product-item")
         if not cards:
             cards = soup.select("div.product")
@@ -188,7 +186,6 @@ def scrape_products(url: str):
                 link = a["href"]
             if link and not link.startswith("http"):
                 link = "https://www.timberland.co.il" + link
-
             if not link:
                 continue
 
@@ -204,7 +201,6 @@ def scrape_products(url: str):
             for sp in price_spans:
                 txt = sp.get_text(" ", strip=True).replace("₪", " ")
                 price_vals.extend(extract_prices(txt))
-
             if not price_vals:
                 continue
 
@@ -223,18 +219,10 @@ def scrape_products(url: str):
     uniq = {}
     for p in products:
         uniq[p["link"]] = p
-
     return list(uniq.values())
 
 
 def build_user_tasks(user: dict):
-    """
-    Returns list of dict tasks:
-    [
-      {"kind":"shoes","label":"...","url":"...","size_label":"..."},
-      {"kind":"clothing",...}
-    ]
-    """
     gender = user.get("gender")
     category = user.get("category")
     price_min = int(user.get("price_min", 0))
@@ -246,29 +234,19 @@ def build_user_tasks(user: dict):
         shoes_size = user.get("shoes_size")
         url = build_shoes_url(gender, shoes_size, price_min, price_max)
         if url:
-            tasks.append({
-                "kind": "shoes",
-                "label": "הנעלה",
-                "url": url,
-                "size_label": str(shoes_size),
-            })
+            tasks.append({"kind": "shoes", "label": "הנעלה", "url": url, "size_label": str(shoes_size)})
 
     if category in ("clothing", "both"):
         clothing_size = user.get("clothing_size")
         url = build_clothing_url(gender, clothing_size, price_min, price_max)
         if url:
-            tasks.append({
-                "kind": "clothing",
-                "label": "ביגוד",
-                "url": url,
-                "size_label": str(clothing_size).upper(),
-            })
+            tasks.append({"kind": "clothing", "label": "ביגוד", "url": url, "size_label": str(clothing_size).upper()})
 
     return tasks
 
 
 def send_summary(chat_id: int, gender: str, kind_label: str, size_label: str, price_min: int, price_max: int, url: str, products: list, new_count: int):
-    gender_label = {"men": "גברים", "women": "נשים", "kids": "ילדים"}.get(gender, gender)
+    gender_label = {"men": "גברים", "women": "נשים", "kids": "ילדים"}.get(gender, str(gender))
 
     if not products:
         msg = (
@@ -290,7 +268,7 @@ def send_summary(chat_id: int, gender: str, kind_label: str, size_label: str, pr
         f"מגדר: <b>{html.escape(gender_label)}</b>\n"
         f"מידה: <b>{html.escape(size_label)}</b>\n"
         f"טווח: <b>{price_min} - {price_max} ₪</b>\n"
-        f"נמצאו: <b>{len(products)}</b> פריטים | חדשים עכשיו: <b>{new_count}</b>\n\n"
+        f"נמצאו: <b>{len(products)}</b> | חדשים עכשיו: <b>{new_count}</b>\n\n"
     )
 
     lines = []
@@ -325,7 +303,6 @@ def check_all_users(force_run: bool = False):
         return
 
     log(f"Found {len(user_data)} registered users.")
-
     new_state = dict(state)
 
     for user_id, u in user_data.items():
@@ -334,7 +311,7 @@ def check_all_users(force_run: bool = False):
             continue
 
         if u.get("state") != "ready":
-            log(f"Skipping user {user_id} because state is not ready: {u.get('state')}")
+            log(f"Skipping user {user_id} - state not ready: {u.get('state')}")
             continue
 
         gender = u.get("gender")
@@ -343,11 +320,7 @@ def check_all_users(force_run: bool = False):
 
         tasks = build_user_tasks(u)
         if not tasks:
-            send_message(
-                int(chat_id),
-                "❌ לא ניתן לבנות חיפוש לפי ההגדרות שלך.\n"
-                "שלח /start והגדר מחדש.",
-            )
+            send_message(int(chat_id), "❌ לא ניתן לבנות חיפוש לפי ההגדרות שלך. שלח /start והגדר מחדש.")
             continue
 
         for t in tasks:
@@ -368,13 +341,8 @@ def check_all_users(force_run: bool = False):
                     is_new = key not in state
                     if is_new:
                         new_count += 1
-                        new_state[key] = {
-                            "title": p["title"],
-                            "link": p["link"],
-                            "price": p["price"],
-                        }
+                        new_state[key] = {"title": p["title"], "link": p["link"], "price": p["price"]}
 
-                        # Send new item photo message (optional)
                         if p.get("img_url"):
                             caption = (
                                 f"🆕 <b>{html.escape(p['title'][:80])}</b>\n"
@@ -404,7 +372,5 @@ def check_all_users(force_run: bool = False):
 
 
 if __name__ == "__main__":
-    # If you want to force sending on manual runs:
-    # set env FORCE_RUN=1 in workflow_dispatch
     force = os.getenv("FORCE_RUN", "0").strip() == "1"
     check_all_users(force_run=force)
