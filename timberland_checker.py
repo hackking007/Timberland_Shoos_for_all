@@ -4,377 +4,210 @@ import html
 import requests
 from bs4 import BeautifulSoup
 from playwright.sync_api import sync_playwright
-from zoneinfo import ZoneInfo
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from config import *
-from coupon_fetcher import get_coupons
 
 # ---------------- Token ----------------
-BOT_TOKEN = (os.getenv("TELEGRAM_BOT_TOKEN") or os.getenv("TELEGRAM_TOKEN") or TELEGRAM_TOKEN or "").strip()
+BOT_TOKEN = (
+    os.getenv("TELEGRAM_BOT_TOKEN")
+    or os.getenv("TELEGRAM_TOKEN")
+    or TELEGRAM_TOKEN
+    or ""
+).strip()
 
-# ---------------- Telegram helpers (HTML mode) ----------------
+# ---------------- Time window logic ----------------
+SEND_HOURS = [7, 19]  # 07:00, 19:00 Israel time
 
-def send_telegram_message(text, chat_id=None, disable_preview=True):
+def should_run_checker_now():
+    tz = ZoneInfo("Asia/Jerusalem")
+    now = datetime.now(tz)
+
+    # Manual GitHub run - always run
+    if os.getenv("GITHUB_EVENT_NAME") == "workflow_dispatch":
+        return True, now, "manual run"
+
+    # Cron run - only exact hours
+    if now.minute != 0:
+        return False, now, "minute not 00"
+    if now.hour not in SEND_HOURS:
+        return False, now, "hour not in send window"
+
+    return True, now, "in send window"
+
+# ---------------- Telegram helpers ----------------
+def send_telegram_message(text, chat_id=None):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    target_chat = chat_id or ADMIN_CHAT_ID
     payload = {
-        "chat_id": target_chat,
+        "chat_id": chat_id or ADMIN_CHAT_ID,
         "text": text,
         "parse_mode": "HTML",
-        "disable_web_page_preview": disable_preview
+        "disable_web_page_preview": True
     }
     try:
-        r = requests.post(url, data=payload, timeout=30)
+        r = requests.post(url, data=payload, timeout=20)
         if ENABLE_DEBUG_LOGS:
-            print(f"send_telegram_message -> {r.status_code} {r.text[:200]}")
+            print(f"send_message -> {r.status_code}")
     except Exception as e:
-        if ENABLE_DEBUG_LOGS:
-            print(f"send_telegram_message error: {e}")
+        print(f"Telegram send error: {e}")
 
-
-def send_photo_with_caption(image_url, caption_html, chat_id=None):
+def send_photo(image_url, caption, chat_id):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto"
-    target_chat = chat_id or ADMIN_CHAT_ID
     payload = {
-        "chat_id": target_chat,
-        "photo": image_url,
-        "caption": caption_html,
+        "chat_id": chat_id,
+        "photo": image_url or "https://via.placeholder.com/300",
+        "caption": caption,
         "parse_mode": "HTML"
     }
     try:
-        r = requests.post(url, data=payload, timeout=30)
+        r = requests.post(url, data=payload, timeout=20)
         if ENABLE_DEBUG_LOGS:
-            print(f"send_photo_with_caption -> {r.status_code} {r.text[:200]}")
+            print(f"send_photo -> {r.status_code}")
     except Exception as e:
-        if ENABLE_DEBUG_LOGS:
-            print(f"send_photo_with_caption error: {e}")
+        print(f"Telegram photo error: {e}")
 
-# ---------------- JSON helpers ----------------
-
+# ---------------- Load / save ----------------
 def load_json(path, default):
     try:
         with open(path, "r", encoding="utf-8") as f:
             return json.load(f)
-    except FileNotFoundError:
+    except Exception:
         return default
-    except Exception as e:
-        if ENABLE_DEBUG_LOGS:
-            print(f"load_json error for {path}: {e}")
-        return default
-
 
 def save_json(path, data):
-    try:
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-    except Exception as e:
-        if ENABLE_DEBUG_LOGS:
-            print(f"save_json error for {path}: {e}")
-
-# ---------------- State / config helpers ----------------
-
-def load_previous_state():
-    return load_json(STATE_FILE, {})
-
-
-def save_current_state(state):
-    save_json(STATE_FILE, state)
-
-
-def load_user_preferences():
-    return load_json(USER_DATA_FILE, {})
-
-
-def load_size_mapping():
-    return load_json(SIZE_MAP_FILE, {})
-
-
-def load_apparel_size_mapping():
-    path = globals().get("APPAREL_SIZE_MAP_FILE", "apparel_size_map.json")
-    return load_json(path, {})
-
-
-def size_to_code(size, gender):
-    m = load_size_mapping()
-    return str(m.get(gender, {}).get(str(size), ""))
-
-
-def apparel_size_to_code(apparel_size, gender):
-    m = load_apparel_size_mapping()
-    return str(m.get(gender, {}).get(str(apparel_size).upper(), ""))
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
 
 # ---------------- URL builders ----------------
-
-def build_shoes_url(gender, shoe_size, price_min, price_max):
+def build_shoes_url(gender, size, price_min, price_max):
     if gender not in CATEGORIES:
         return None
-    base_url = CATEGORIES[gender]["url"]
-    size_code = size_to_code(shoe_size, gender)
+    size_code = SIZE_MAP.get(gender, {}).get(str(size))
     if not size_code:
         return None
-    return f"{base_url}?price={int(price_min)}_{int(price_max)}&size={size_code}&product_list_order=low_to_high"
-
+    return (
+        f"{CATEGORIES[gender]['url']}?"
+        f"price={price_min}_{price_max}&size={size_code}"
+        f"&product_list_order=low_to_high"
+    )
 
 def build_clothing_url(gender, apparel_size, price_min, price_max):
     if gender not in CLOTHING_URLS:
         return None
 
-    base_url = CLOTHING_URLS[gender]
+    base = f"{CLOTHING_URLS[gender]}?price={price_min}_{price_max}"
+    size_code = APPAREL_SIZE_MAP.get(gender, {}).get(str(apparel_size).upper())
 
-    if not apparel_size:
-        return f"{base_url}?price={int(price_min)}_{int(price_max)}&product_list_order=low_to_high"
+    if size_code:
+        base += f"&size={size_code}"
 
-    size_code = apparel_size_to_code(apparel_size, gender)
+    return base + "&product_list_order=low_to_high"
 
-    if not size_code:
-        return f"{base_url}?price={int(price_min)}_{int(price_max)}&product_list_order=low_to_high"
-
-    return f"{base_url}?price={int(price_min)}_{int(price_max)}&size={size_code}&product_list_order=low_to_high"
-
-# ---------------- Scheduling guard ----------------
-
-def should_run_checker_now():
-    tz = ZoneInfo("Asia/Jerusalem")
-    now = datetime.now(tz)
-    send_hours = [7, 19]
-
-    if now.minute != 0:
-        return False, now
-    if now.hour not in send_hours:
-        return False, now
-    return True, now
-
-# ---------------- Playwright scan ----------------
-
-def scan_url_with_playwright(url):
+# ---------------- Scraper ----------------
+def scrape_products(url):
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
-        context = browser.new_context(locale="he-IL")
-        page = context.new_page()
-
+        page = browser.new_page(locale="he-IL")
         page.goto(url, timeout=SCAN_TIMEOUT)
-        page.wait_for_load_state("networkidle", timeout=SCAN_TIMEOUT)
-        page.wait_for_timeout(1200)
+        page.wait_for_load_state("networkidle")
 
-        clicks = 0
-        while True:
+        for _ in range(MAX_LOAD_MORE_CLICKS):
             try:
-                load_more = page.query_selector("a.action.more")
-                if load_more:
-                    load_more.click()
-                    page.wait_for_timeout(LOAD_MORE_DELAY)
-                    clicks += 1
-                    if clicks > MAX_LOAD_MORE_CLICKS:
-                        break
-                else:
+                btn = page.query_selector("a.action.more")
+                if not btn:
                     break
+                btn.click()
+                page.wait_for_timeout(LOAD_MORE_DELAY)
             except Exception:
                 break
 
         soup = BeautifulSoup(page.content(), "html.parser")
-        product_cards = soup.select("div.product")
-
         browser.close()
-        return product_cards
 
-# ---------------- Parsing products ----------------
+    products = []
+    for card in soup.select("div.product"):
+        a = card.select_one("a")
+        img = card.select_one("img")
+        prices = card.select("span.price")
 
-def extract_products(product_cards):
-    items = []
-    for card in product_cards:
-        link_tag = card.select_one("a")
-        img_tag = card.select_one("img")
-        price_tags = card.select("span.price")
-
-        title = img_tag["alt"].strip() if img_tag and img_tag.has_attr("alt") else "ללא שם"
-        link = link_tag["href"] if link_tag and link_tag.has_attr("href") else None
-        if not link:
+        if not a or not prices:
             continue
+
+        link = a.get("href")
         if not link.startswith("http"):
             link = "https://www.timberland.co.il" + link
 
-        img_url = img_tag["src"] if img_tag and img_tag.has_attr("src") else None
-
-        prices = []
-        for tag in price_tags:
+        price_vals = []
+        for p in prices:
             try:
-                text = tag.text.strip().replace("\xa0", "").replace("₪", "").replace(",", "")
-                val = float(text)
-                if val > 0:
-                    prices.append(val)
+                price_vals.append(float(
+                    p.text.replace("₪", "").replace(",", "").strip()
+                ))
             except Exception:
-                continue
+                pass
 
-        if not prices:
+        if not price_vals:
             continue
 
-        price_val = min(prices)
-        items.append({"title": title, "link": link, "price": price_val, "img_url": img_url})
+        products.append({
+            "title": img.get("alt", "Item"),
+            "link": link,
+            "img": img.get("src"),
+            "price": min(price_vals)
+        })
 
-    return items
+    return products
 
-# ---------------- Coupons block ----------------
-
-def build_coupons_block():
-    coupons = get_coupons(force_refresh=False, max_items=5)
-    if not coupons:
-        return ""
-
-    lines = ["\n🎟️ <b>קופונים והטבות</b> (לא תמיד מובטח פעיל, מומלץ לבדוק בקופה):"]
-    for c in coupons:
-        src = html.escape(c.get("source", ""))
-        code = (c.get("code") or "").strip()
-        title = html.escape(c.get("title", ""))
-        url = html.escape(c.get("url", ""))
-
-        if code:
-            lines.append(f"- <b>{src}</b>: <code>{html.escape(code)}</code> - {title}\n{url}")
-        else:
-            lines.append(f"- <b>{src}</b>: {title}\n{url}")
-
-    return "\n".join(lines)
-
-# ---------------- Send items ----------------
-
-def send_items_to_user(user_id, chat_id, kind_label, url, items, previous_state, current_state):
-    new_count = 0
-    all_items = []
-
-    for it in items:
-        key = f"{user_id}_{kind_label}_{it['link']}"
-        current_state[key] = it
-
-        is_new = key not in previous_state
-        all_items.append({**it, "is_new": is_new})
-
-        if is_new:
-            safe_title = html.escape(it["title"])
-            safe_link = html.escape(it["link"])
-            caption = f"<b>{safe_title}</b> - ₪{int(it['price'])}\n<a href=\"{safe_link}\">לינק למוצר</a>"
-            send_photo_with_caption(it["img_url"] or "https://via.placeholder.com/300", caption, chat_id=chat_id)
-            new_count += 1
-
-    coupons_block = build_coupons_block()
-
-    if all_items:
-        all_items.sort(key=lambda x: x["price"])
-        subset = all_items[:15]
-
-        header = f"👟 <b>תוצאות</b> - <b>{html.escape(kind_label)}</b>\n"
-        lines = []
-        for i, it in enumerate(subset, 1):
-            mark = "🆕 " if it["is_new"] else ""
-            lines.append(
-                f"{i}. {mark}<b>{html.escape(it['title'][:60])}</b> - ₪{int(it['price'])}\n{html.escape(it['link'])}"
-            )
-
-        if len(all_items) > len(subset):
-            lines.append(f"\nועוד {len(all_items) - len(subset)} פריטים...")
-
-        lines.append(f"\n🔎 {html.escape(url)}")
-        msg = header + "\n".join(lines) + (coupons_block if coupons_block else "")
-        send_telegram_message(msg, chat_id=chat_id)
-    else:
-        msg = (
-            f"👟 <b>לא נמצאו פריטים</b> - <b>{html.escape(kind_label)}</b>\n\n🔎 {html.escape(url)}"
-            + (coupons_block if coupons_block else "")
-        )
-        send_telegram_message(msg, chat_id=chat_id)
-
-    return new_count, len(all_items)
-
-# ---------------- Main logic ----------------
-
+# ---------------- Main ----------------
 def check_shoes():
-    ok, now = should_run_checker_now()
+    ok, now, reason = should_run_checker_now()
     if not ok:
-        if ENABLE_DEBUG_LOGS:
-            print(f"Not in send window, IL time is {now.strftime('%H:%M')}, skipping checker scan.")
+        print(f"Not in send window ({now.strftime('%H:%M')}), skip. Reason: {reason}")
         return
 
-    if ENABLE_DEBUG_LOGS:
-        print(f"[{datetime.now()}] Starting shoe check...")
-        print(f"BOT_TOKEN length: {len(BOT_TOKEN)}")
+    print(f"Checker running ({reason}) at {now.strftime('%H:%M')}")
 
-    previous_state = load_previous_state()
-    current_state = {}
-    user_data = load_user_preferences()
+    users = load_json(USER_DATA_FILE, {})
+    prev_state = load_json(STATE_FILE, {})
+    new_state = {}
 
-    if ENABLE_DEBUG_LOGS:
-        print(f"user_data loaded: {json.dumps(user_data, ensure_ascii=False, indent=2)}")
+    for uid, u in users.items():
+        chat_id = u.get("chat_id")
+        gender = u.get("gender")
+        category = u.get("category")
+        price_min = u.get("price_min")
+        price_max = u.get("price_max")
 
-    if not user_data:
-        send_telegram_message("⚠️ אין משתמשים רשומים ב user_data.json.")
-        return
+        urls = []
 
-    if ENABLE_DEBUG_LOGS:
-        print(f"Found {len(user_data)} registered users.")
+        if category in ("shoes", "both"):
+            url = build_shoes_url(gender, u.get("size"), price_min, price_max)
+            if url:
+                urls.append(("Shoes", url))
 
-    for user_id, prefs in user_data.items():
-        gender = prefs.get("gender", "men")
-        cat = prefs.get("category", "shoes")
-        chat_id = prefs.get("chat_id", int(user_id) if str(user_id).isdigit() else user_id)
+        if category in ("clothing", "both"):
+            url = build_clothing_url(gender, u.get("apparel_size"), price_min, price_max)
+            if url:
+                urls.append(("Clothing", url))
 
-        price_min = prefs.get("price_min", 0)
-        price_max = prefs.get("price_max", 300)
-        if price_min > price_max:
-            price_min, price_max = price_max, price_min
+        for label, url in urls:
+            print(f"Scanning {label} for user {uid}")
+            products = scrape_products(url)
 
-        tasks = []
+            for p in products:
+                key = f"{uid}:{label}:{p['link']}"
+                new_state[key] = p
 
-        if cat in ("shoes", "both"):
-            shoe_size = prefs.get("size")
-            url = build_shoes_url(gender, shoe_size, price_min, price_max)
-            tasks.append(("Shoes", url))
+                if key not in prev_state:
+                    caption = (
+                        f"<b>{html.escape(p['title'])}</b>\n"
+                        f"₪{int(p['price'])}\n"
+                        f"<a href='{p['link']}'>למוצר</a>"
+                    )
+                    send_photo(p["img"], caption, chat_id)
 
-        if cat in ("clothing", "both"):
-            apparel_size = prefs.get("apparel_size")
-            url = build_clothing_url(gender, apparel_size, price_min, price_max)
-            tasks.append(("Clothing", url))
-
-        for kind_label, url in tasks:
-            if not url:
-                send_telegram_message(
-                    f"❌ הגדרות לא תקינות עבור <b>{html.escape(kind_label)}</b>. שלח /start והגדר מחדש.",
-                    chat_id=chat_id
-                )
-                continue
-
-            if ENABLE_DEBUG_LOGS:
-                print(f"Launching browser for user {user_id} - {kind_label} URL: {url}")
-
-            try:
-                cards = scan_url_with_playwright(url)
-                if ENABLE_DEBUG_LOGS:
-                    print(f"Found {len(cards)} products for user {user_id} ({kind_label})")
-
-                items = extract_products(cards)
-                new_count, total_count = send_items_to_user(
-                    user_id=user_id,
-                    chat_id=chat_id,
-                    kind_label=kind_label,
-                    url=url,
-                    items=items,
-                    previous_state=previous_state,
-                    current_state=current_state
-                )
-
-                if ENABLE_DEBUG_LOGS:
-                    print(f"Completed scan for user {user_id} ({kind_label}) new={new_count} total={total_count}")
-
-            except Exception as e:
-                if ENABLE_DEBUG_LOGS:
-                    print(f"Error scanning for user {user_id} ({kind_label}): {e}")
-                send_telegram_message(
-                    f"❌ שגיאה בסריקה עבור <b>{html.escape(kind_label)}</b>: {html.escape(str(e))}",
-                    chat_id=chat_id
-                )
-
-    save_current_state(current_state)
-    if ENABLE_DEBUG_LOGS:
-        print(f"Saved current_state with {len(current_state)} items total.")
-
+    save_json(STATE_FILE, new_state)
 
 if __name__ == "__main__":
     check_shoes()
