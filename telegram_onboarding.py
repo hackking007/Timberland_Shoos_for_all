@@ -185,6 +185,9 @@ def main():
 
     resp = requests.get(f"{TELEGRAM_API_URL}/getUpdates", params=params, timeout=30)
     data = resp.json()
+    print("Telegram raw response:")
+    print(json.dumps(data, indent=2, ensure_ascii=False))
+
 
     if not data.get("ok"):
         print("Error from Telegram:", data)
