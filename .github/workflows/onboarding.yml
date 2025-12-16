@@ -2,22 +2,22 @@ name: Timberland Onboarding
 
 on:
   schedule:
-    - cron: "*/30 * * * *"  # כל 30 דקות (UTC)
-  workflow_dispatch:
+    - cron: "*/30 * * * *"   # ריצה כל 30 דקות
+  workflow_dispatch:         # מאפשר הרצה ידנית
 
 jobs:
   onboarding:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repo
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Download state artifact if exists
+      - name: Download previous state (if exists)
         uses: actions/download-artifact@v4
         with:
           name: timberland-state
-        continue-on-error: true
+        continue-on-error: true   # אם אין artifact עדיין, לא נכשלים
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -34,10 +34,11 @@ jobs:
         run: |
           python telegram_onboarding.py
 
-      - name: Upload state artifact
+      - name: Upload updated state files
         uses: actions/upload-artifact@v4
         with:
           name: timberland-state
           path: |
             user_data.json
             last_update_id.json
+            state.json
