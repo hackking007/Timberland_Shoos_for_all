@@ -5,9 +5,6 @@ import os
 
 # Support both env names, prefer TELEGRAM_BOT_TOKEN
 TELEGRAM_BOT_TOKEN = (os.getenv("TELEGRAM_BOT_TOKEN", "") or os.getenv("TELEGRAM_TOKEN", "")).strip()
-if not TELEGRAM_BOT_TOKEN:
-    # keep it empty - scripts will print a clear error
-    TELEGRAM_BOT_BOT_TOKEN = ""
 
 _admin_env = (os.getenv("ADMIN_CHAT_ID", "") or os.getenv("CHAT_ID", "")).strip()
 ADMIN_CHAT_ID = int(_admin_env) if _admin_env.isdigit() else None
@@ -27,26 +24,22 @@ MAX_LOAD_MORE_CLICKS = 10
 LOAD_MORE_DELAY = 1500  # ms
 
 # ---------------- Sending window (Israel time) ----------------
-# Checker workflow can run every 30 minutes, but sends only at these hours (IL time).
 SEND_HOURS_IL = [7, 19]
 
 # ---------------- Categories / URLs ----------------
-# Shoes pages:
+
 SHOES_BASE = {
     "men": "https://www.timberland.co.il/men/footwear",
     "women": "https://www.timberland.co.il/women/%D7%94%D7%A0%D7%A2%D7%9C%D7%94",
     "kids": "https://www.timberland.co.il/kids/toddlers-0-5y",
 }
 
-# Clothing pages:
 CLOTHING_BASE = {
     "men": "https://www.timberland.co.il/men/clothing",
     "women": "https://www.timberland.co.il/women/clothing",
     "kids": "https://www.timberland.co.il/kids/clothing",
 }
 
-# Shoes size mapping (site-specific). You already validated:
-# men 43 -> size=794, women 40 -> size=802, etc.
 SHOES_SIZE_MAP = {
     "men": {"40": "791", "41": "792", "42": "793", "43": "794", "44": "795", "45": "796"},
     "women": {"36": "798", "37": "799", "38": "800", "39": "801", "40": "802", "41": "803"},
@@ -54,9 +47,8 @@ SHOES_SIZE_MAP = {
 }
 
 # Clothing size mapping - based on your example: men clothing size L -> size=4
-# If you find different codes, update here.
 CLOTHING_SIZE_MAP = {
-    "men":  {"XS": "1", "S": "2", "M": "3", "L": "4", "XL": "5", "XXL": "6", "XXXL": "7"},
+    "men":   {"XS": "1", "S": "2", "M": "3", "L": "4", "XL": "5", "XXL": "6", "XXXL": "7"},
     "women": {"XS": "1", "S": "2", "M": "3", "L": "4", "XL": "5", "XXL": "6", "XXXL": "7"},
     "kids":  {"2": "2", "3": "3", "4": "4", "5": "5", "6": "6", "7": "7", "8": "8", "10": "10", "12": "12"},
 }
