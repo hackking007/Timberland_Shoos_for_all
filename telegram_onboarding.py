@@ -4,51 +4,34 @@ import json
 import requests
 from datetime import datetime
 
-# config.py חייב להכיל לפחות:
-# USER_DATA_FILE = "user_data.json"
-# LAST_UPDATE_ID_FILE = "last_update_id.json"
-# ENABLE_DEBUG_LOGS = True/False
-# ENABLE_ADMIN_NOTIFICATIONS = True/False
-# ADMIN_CHAT_ID = <int>
-# (אפשר גם TELEGRAM_TOKEN, אבל אנחנו נעדיף env בשם TELEGRAM_BOT_TOKEN)
-from config import USER_DATA_FILE, LAST_UPDATE_ID_FILE, ENABLE_DEBUG_LOGS, ENABLE_ADMIN_NOTIFICATIONS, ADMIN_CHAT_ID
+import config as cfg
 
-BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN") or os.getenv("TELEGRAM_TOKEN")  # fallback אם יש לך משתנה אחר
+USER_DATA_FILE = getattr(cfg, "USER_DATA_FILE", "user_data.json")
+LAST_UPDATE_ID_FILE = getattr(cfg, "LAST_UPDATE_ID_FILE", "last_update_id.json")
+ENABLE_DEBUG_LOGS = getattr(cfg, "ENABLE_DEBUG_LOGS", True)
+
+BOT_TOKEN = (os.getenv("TELEGRAM_BOT_TOKEN") or os.getenv("TELEGRAM_TOKEN") or getattr(cfg, "TELEGRAM_TOKEN", "")).strip()
+if not BOT_TOKEN:
+    raise RuntimeError("Missing TELEGRAM token. Set TELEGRAM_BOT_TOKEN (recommended) or TELEGRAM_TOKEN.")
+
+VALID_APPAREL_SIZES = {"XS", "S", "M", "L", "XL", "XXL", "XXXL"}
 
 
-# ---------------- Telegram helpers ----------------
-
-def tg_api_url(method: str) -> str:
+def tg_url(method: str) -> str:
     return f"https://api.telegram.org/bot{BOT_TOKEN}/{method}"
 
 
-def send_message(chat_id: int, text: str, disable_preview: bool = True) -> None:
-    url = tg_api_url("sendMessage")
+def send_message(chat_id: int, text: str) -> None:
     payload = {
         "chat_id": chat_id,
         "text": text,
         "parse_mode": "HTML",
-        "disable_web_page_preview": disable_preview,
+        "disable_web_page_preview": True
     }
-    try:
-        resp = requests.post(url, data=payload, timeout=30)
-        if ENABLE_DEBUG_LOGS:
-            print(f"send_message to {chat_id} -> status {resp.status_code}")
-    except Exception as e:
-        if ENABLE_DEBUG_LOGS:
-            print(f"send_message error: {e}")
+    r = requests.post(tg_url("sendMessage"), data=payload, timeout=30)
+    if ENABLE_DEBUG_LOGS:
+        print(f"send_message to {chat_id} -> status {r.status_code}")
 
-
-def admin_notify(text: str) -> None:
-    if not ENABLE_ADMIN_NOTIFICATIONS:
-        return
-    try:
-        send_message(ADMIN_CHAT_ID, text)
-    except Exception:
-        pass
-
-
-# ---------------- Persistence ----------------
 
 def load_json(path: str, default):
     try:
@@ -75,12 +58,11 @@ def load_user_data() -> dict:
     return load_json(USER_DATA_FILE, {})
 
 
-def save_user_data(data: dict) -> None:
-    save_json(USER_DATA_FILE, data)
+def save_user_data(d: dict) -> None:
+    save_json(USER_DATA_FILE, d)
 
 
 def load_last_update_id():
-    # נשתדל לתמוך גם בפורמט {"last_update_id": 123} וגם במספר חשוף
     raw = load_json(LAST_UPDATE_ID_FILE, None)
     if raw is None:
         return None
@@ -91,13 +73,8 @@ def load_last_update_id():
     return None
 
 
-def save_last_update_id(update_id: int) -> None:
-    save_json(LAST_UPDATE_ID_FILE, {"last_update_id": update_id})
-
-
-# ---------------- Parsing ----------------
-
-ONE_SHOT_RE = re.compile(r"^\s*([123])\s+([ABCabc])\s+(\d{1,2})\s+(\d+)\s+(\d+)\s*$")
+def save_last_update_id(x: int) -> None:
+    save_json(LAST_UPDATE_ID_FILE, {"last_update_id": x})
 
 
 def map_gender(code: str) -> str:
@@ -105,208 +82,109 @@ def map_gender(code: str) -> str:
 
 
 def map_category(code: str) -> str:
-    code = code.upper()
-    return {"A": "shoes", "B": "clothing", "C": "both"}.get(code, "shoes")
+    c = code.upper()
+    return {"A": "shoes", "B": "clothing", "C": "both"}.get(c, "shoes")
 
 
 def welcome_text() -> str:
     return (
-        "👟 <b>ברוך הבא לבוט מעקב טימברלנד!</b>\n\n"
-        "הבוט יסרוק את Timberland.co.il וישלח לך מוצרים שמתאימים להעדפות שלך.\n\n"
-        "📬 <b>עדכוני מוצרים נשלחים פעמיים ביום</b> - בערך בשעות <b>07:00</b> ו-<b>19:00</b> (שעון ישראל).\n\n"
-        "כדי להגדיר מעקב מותאם אישית בהודעה אחת, שלח את ההודעה בפורמט:\n\n"
-        "<b>מגדר</b> <b>סוג מוצר</b> <b>מידה</b> <b>מחיר מינימלי</b> <b>מחיר מקסימלי</b>\n\n"
-        "קידודים:\n"
+        "👟 <b>Timberland Tracker</b>\n\n"
+        "📬 עדכוני מוצרים נשלחים פעמיים ביום בשעות <b>07:00</b> ו-<b>19:00</b> (שעון ישראל).\n\n"
+        "כדי להגדיר מעקב בהודעה אחת, שלח בפורמט הבא:\n\n"
+        "<b>מגדר</b> <b>סוג</b> <b>מידות</b> <b>מחיר מינ</b> <b>מחיר מקס</b>\n\n"
+        "מגדר:\n"
         "1 - גברים\n"
         "2 - נשים\n"
         "3 - ילדים\n\n"
+        "סוג:\n"
         "A - הנעלה\n"
         "B - ביגוד\n"
         "C - גם וגם\n\n"
-        "דוגמה:\n"
-        "<code>1 A 43 128 299</code>\n\n"
-        "אפשר גם להגדיר בהודעות נפרדות אם נוח לך - הבוט יוביל אותך שלב-שלב.\n\n"
-        "סטטוס משתמשים: שלח <code>/stat</code>"
+        "דוגמאות:\n"
+        "<code>1 A 43 128 299</code>\n"
+        "<code>1 B L 68 1001</code>\n"
+        "<code>1 C 43 L 68 1001</code>\n\n"
+        "בביגוד המידות הן: XS, S, M, L, XL, XXL, XXXL\n"
+        "סטטוס משתמשים: <code>/stat</code>"
     )
 
 
-def stat_text(user_data: dict) -> str:
-    total = len(user_data)
-    ids = list(user_data.keys())[:20]
-    return (
-        f"📊 <b>Stats</b>\n"
-        f"Users registered: <b>{total}</b>\n"
-        f"Sample IDs: <code>{', '.join(ids)}</code>"
-    )
+# Regex:
+# A: "1 A 43 128 299"
+ONE_SHOT_SHOES = re.compile(r"^\s*([123])\s+([Aa])\s+(\d{1,2})\s+(\d+)\s+(\d+)\s*$")
+# B: "1 B L 68 1001"
+ONE_SHOT_CLOTH = re.compile(r"^\s*([123])\s+([Bb])\s+(XS|S|M|L|XL|XXL|XXXL)\s+(\d+)\s+(\d+)\s*$", re.IGNORECASE)
+# C: "1 C 43 L 68 1001"
+ONE_SHOT_BOTH = re.compile(r"^\s*([123])\s+([Cc])\s+(\d{1,2})\s+(XS|S|M|L|XL|XXL|XXXL)\s+(\d+)\s+(\d+)\s*$", re.IGNORECASE)
 
-
-# ---------------- Legacy step-by-step flow ----------------
-# נשמור "שלב" למשתמש כדי לתמוך באפשרות הישנה (1 -> size -> min -> max)
-# state values:
-# - awaiting_gender
-# - awaiting_category
-# - awaiting_size
-# - awaiting_price_min
-# - awaiting_price_max
-# - ready
 
 def ensure_user(user_data: dict, chat_id: int) -> dict:
     key = str(chat_id)
     if key not in user_data:
-        user_data[key] = {"chat_id": chat_id, "state": "awaiting_gender"}
-    if "chat_id" not in user_data[key]:
-        user_data[key]["chat_id"] = chat_id
-    if "state" not in user_data[key]:
-        user_data[key]["state"] = "awaiting_gender"
+        user_data[key] = {"chat_id": chat_id, "state": "ready"}
+    user_data[key]["chat_id"] = chat_id
     return user_data[key]
 
 
-def handle_one_shot(user_data: dict, chat_id: int, text: str) -> bool:
-    m = ONE_SHOT_RE.match(text)
-    if not m:
-        return False
+def parse_one_shot(text: str):
+    t = text.strip()
 
-    g_code, c_code, size, pmin, pmax = m.groups()
-    prefs = ensure_user(user_data, chat_id)
+    m = ONE_SHOT_BOTH.match(t)
+    if m:
+        g, c, shoe_size, apparel_size, pmin, pmax = m.groups()
+        return {
+            "gender": map_gender(g),
+            "category": "both",
+            "size": str(int(shoe_size)),
+            "apparel_size": apparel_size.upper(),
+            "price_min": int(pmin),
+            "price_max": int(pmax),
+        }
 
-    prefs["gender"] = map_gender(g_code)
-    prefs["category"] = map_category(c_code)
-    prefs["size"] = str(int(size))
-    prefs["price_min"] = int(pmin)
-    prefs["price_max"] = int(pmax)
-    prefs["state"] = "ready"
+    m = ONE_SHOT_SHOES.match(t)
+    if m:
+        g, c, shoe_size, pmin, pmax = m.groups()
+        return {
+            "gender": map_gender(g),
+            "category": "shoes",
+            "size": str(int(shoe_size)),
+            "apparel_size": None,
+            "price_min": int(pmin),
+            "price_max": int(pmax),
+        }
 
-    send_message(
-        chat_id,
-        "✅ נשמר!\n\n"
-        f"מגדר: <b>{prefs['gender']}</b>\n"
-        f"סוג מוצר: <b>{prefs['category']}</b>\n"
-        f"מידה: <b>{prefs['size']}</b>\n"
-        f"טווח: <b>{prefs['price_min']}-{prefs['price_max']}</b>\n\n"
-        "תתחיל לקבל עדכונים אוטומטית בשעות 07:00 ו-19:00 (שעון ישראל)."
-    )
-    return True
+    m = ONE_SHOT_CLOTH.match(t)
+    if m:
+        g, c, apparel_size, pmin, pmax = m.groups()
+        return {
+            "gender": map_gender(g),
+            "category": "clothing",
+            "size": None,
+            "apparel_size": apparel_size.upper(),
+            "price_min": int(pmin),
+            "price_max": int(pmax),
+        }
 
+    return None
 
-def handle_step_by_step(user_data: dict, chat_id: int, text: str) -> None:
-    prefs = ensure_user(user_data, chat_id)
-    state = prefs.get("state", "awaiting_gender")
-
-    # התחלה מחדש
-    if text.strip().lower() in ["/start", "start", "start/", "/restart"]:
-        prefs["state"] = "awaiting_gender"
-        send_message(chat_id, welcome_text())
-        send_message(chat_id, "בחר מגדר: 1-גברים, 2-נשים, 3-ילדים")
-        return
-
-    if text.strip().lower() == "/stat":
-        send_message(chat_id, stat_text(user_data))
-        return
-
-    # אם הגיעו הודעות בפורמט "one shot", נטפל בזה כאן (גם בתוך step flow)
-    if handle_one_shot(user_data, chat_id, text):
-        return
-
-    # זרימה ישנה
-    if state == "awaiting_gender":
-        if text.strip() in ["1", "2", "3"]:
-            prefs["gender"] = map_gender(text.strip())
-            prefs["state"] = "awaiting_category"
-            send_message(chat_id, "סוג מוצר: A-הנעלה, B-ביגוד, C-גם וגם")
-        else:
-            send_message(chat_id, "אנא בחר מגדר: 1-גברים, 2-נשים, 3-ילדים")
-        return
-
-    if state == "awaiting_category":
-        c = text.strip().upper()
-        if c in ["A", "B", "C"]:
-            prefs["category"] = map_category(c)
-            prefs["state"] = "awaiting_size"
-            send_message(chat_id, "אנא הזן מידה (לדוגמה 43)")
-        else:
-            send_message(chat_id, "אנא בחר: A-הנעלה, B-ביגוד, C-גם וגם")
-        return
-
-    if state == "awaiting_size":
-        if text.strip().isdigit():
-            prefs["size"] = str(int(text.strip()))
-            prefs["state"] = "awaiting_price_min"
-            send_message(chat_id, "אנא הזן מחיר מינימלי (לדוגמה 0)")
-        else:
-            send_message(chat_id, "מידה לא תקינה. נסה שוב (מספר בלבד).")
-        return
-
-    if state == "awaiting_price_min":
-        if text.strip().isdigit():
-            prefs["price_min"] = int(text.strip())
-            prefs["state"] = "awaiting_price_max"
-            send_message(chat_id, "אנא הזן מחיר מקסימלי (לדוגמה 300)")
-        else:
-            send_message(chat_id, "מחיר מינימלי לא תקין. נסה שוב (מספר בלבד).")
-        return
-
-    if state == "awaiting_price_max":
-        if text.strip().isdigit():
-            prefs["price_max"] = int(text.strip())
-            # נוודא מינימום <= מקסימום
-            if prefs["price_min"] > prefs["price_max"]:
-                prefs["price_min"], prefs["price_max"] = prefs["price_max"], prefs["price_min"]
-            prefs["state"] = "ready"
-            send_message(
-                chat_id,
-                "✅ נשמר!\n\n"
-                f"מגדר: <b>{prefs.get('gender')}</b>\n"
-                f"סוג מוצר: <b>{prefs.get('category')}</b>\n"
-                f"מידה: <b>{prefs.get('size')}</b>\n"
-                f"טווח: <b>{prefs.get('price_min')}-{prefs.get('price_max')}</b>\n\n"
-                "תתחיל לקבל עדכונים אוטומטית בשעות 07:00 ו-19:00 (שעון ישראל).\n"
-                "אם תרצה לעדכן הכל בהודעה אחת, שלח לדוגמה: <code>1 A 43 128 299</code>"
-            )
-        else:
-            send_message(chat_id, "מחיר מקסימלי לא תקין. נסה שוב (מספר בלבד).")
-        return
-
-    # ready
-    send_message(
-        chat_id,
-        "אני כבר מוגדר ומוכן. כדי לעדכן הגדרות שלח שוב הודעה בפורמט:\n"
-        "<code>1 A 43 128 299</code>\n"
-        "או שלח /start כדי להתחיל מחדש."
-    )
-
-
-# ---------------- Telegram polling ----------------
 
 def get_updates(offset=None):
-    url = tg_api_url("getUpdates")
     params = {}
     if offset is not None:
         params["offset"] = offset
     if ENABLE_DEBUG_LOGS:
         print(f"Calling getUpdates with params: {params}")
-    resp = requests.get(url, params=params, timeout=30)
+    r = requests.get(tg_url("getUpdates"), params=params, timeout=30)
     if ENABLE_DEBUG_LOGS:
-        print(f"getUpdates HTTP status: {resp.status_code}")
-    data = resp.json()
+        print(f"getUpdates HTTP status: {r.status_code}")
+    data = r.json()
     if not data.get("ok"):
         raise RuntimeError(f"Telegram error: {data}")
     return data.get("result", [])
 
 
-def extract_message(update: dict):
-    msg = update.get("message") or update.get("edited_message")
-    if not msg:
-        return None, None
-    chat = msg.get("chat", {})
-    chat_id = chat.get("id")
-    text = msg.get("text", "")
-    return chat_id, text
-
-
 def main():
     print("=== telegram_onboarding.py starting ===")
-    if not BOT_TOKEN:
-        raise RuntimeError("TELEGRAM_BOT_TOKEN is not set")
 
     user_data = load_user_data()
     last_update_id = load_last_update_id()
@@ -319,33 +197,83 @@ def main():
     for upd in updates:
         upd_id = upd.get("update_id")
         if isinstance(upd_id, int):
-            new_last_update_id = upd_id if (new_last_update_id is None or upd_id > new_last_update_id) else new_last_update_id
+            if new_last_update_id is None or upd_id > new_last_update_id:
+                new_last_update_id = upd_id
 
-        chat_id, text = extract_message(upd)
+        msg = upd.get("message") or upd.get("edited_message")
+        if not msg:
+            continue
+
+        chat_id = msg.get("chat", {}).get("id")
+        text = (msg.get("text") or "").strip()
+
         if not chat_id:
             continue
 
-        text = text or ""
-        print(f"handle_message: chat_id={chat_id}, text={repr(text)}")
+        if ENABLE_DEBUG_LOGS:
+            print(f"handle_message: chat_id={chat_id}, text={repr(text)}")
 
-        try:
-            # תמיכה גם ב-/start וגם ב-flow/one-shot
-            if text.strip().lower() == "/start":
-                prefs = ensure_user(user_data, chat_id)
-                prefs["state"] = "awaiting_gender"
-                send_message(chat_id, welcome_text())
-                send_message(chat_id, "בחר מגדר: 1-גברים, 2-נשים, 3-ילדים")
-            elif text.strip().lower() == "/stat":
-                send_message(chat_id, stat_text(user_data))
-            else:
-                handle_step_by_step(user_data, chat_id, text)
-        except Exception as e:
-            if ENABLE_DEBUG_LOGS:
-                print(f"Error handling message for chat_id={chat_id}: {e}")
-            send_message(chat_id, "אירעה שגיאה בעיבוד ההודעה. נסה שוב או שלח /start.")
+        if text.lower() == "/start":
+            send_message(chat_id, welcome_text())
+            continue
 
-    # שמירה
-    save_user_data(user_data)
+        if text.lower() == "/stat":
+            send_message(chat_id, f"📊 <b>Users registered</b>: <b>{len(user_data)}</b>")
+            continue
+
+        parsed = parse_one_shot(text)
+        if not parsed:
+            send_message(chat_id, "❌ פורמט לא תקין. שלח /start כדי לקבל דוגמאות פורמט.")
+            continue
+
+        # normalize prices
+        if parsed["price_min"] > parsed["price_max"]:
+            parsed["price_min"], parsed["price_max"] = parsed["price_max"], parsed["price_min"]
+
+        # validate apparel
+        if parsed["category"] in ("clothing", "both"):
+            a = (parsed.get("apparel_size") or "").upper()
+            if a not in VALID_APPAREL_SIZES:
+                send_message(chat_id, "❌ מידה לביגוד לא תקינה. השתמש ב: XS,S,M,L,XL,XXL,XXXL")
+                continue
+
+        prefs = ensure_user(user_data, chat_id)
+        prefs["state"] = "ready"
+        prefs["gender"] = parsed["gender"]
+        prefs["category"] = parsed["category"]
+        prefs["price_min"] = parsed["price_min"]
+        prefs["price_max"] = parsed["price_max"]
+
+        # shoes size
+        if parsed["category"] in ("shoes", "both"):
+            prefs["size"] = parsed["size"]
+
+        # apparel size
+        if parsed["category"] in ("clothing", "both"):
+            prefs["apparel_size"] = parsed["apparel_size"]
+
+        # cleanup fields if not used
+        if parsed["category"] == "shoes":
+            prefs.pop("apparel_size", None)
+        if parsed["category"] == "clothing":
+            prefs.pop("size", None)
+
+        save_user_data(user_data)
+
+        msg_ok = (
+            "✅ נשמר!\n\n"
+            f"מגדר: <b>{prefs.get('gender')}</b>\n"
+            f"סוג: <b>{prefs.get('category')}</b>\n"
+            f"מחיר: <b>{prefs.get('price_min')}-{prefs.get('price_max')}</b>\n"
+        )
+        if prefs.get("size"):
+            msg_ok += f"נעליים - מידה: <b>{prefs.get('size')}</b>\n"
+        if prefs.get("apparel_size"):
+            msg_ok += f"ביגוד - מידה: <b>{prefs.get('apparel_size')}</b>\n"
+        msg_ok += "\n📬 תקבל עדכונים ב-07:00 וב-19:00 (שעון ישראל)."
+
+        send_message(chat_id, msg_ok)
+
     if isinstance(new_last_update_id, int):
         save_last_update_id(new_last_update_id)
 
