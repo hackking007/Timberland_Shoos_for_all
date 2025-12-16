@@ -1,0 +1,56 @@
+name: Timberland Bot
+
+on:
+  schedule:
+    # הבוט רץ כל 30 דקות - בכל ריצה:
+    # 1) עושה onboarding למשתמשים חדשים
+    # 2) מריץ checker רק בשעות שנקבעו (בתוך הקוד)
+    - cron: "*/30 * * * *"
+  workflow_dispatch:         # הפעלה ידנית לפי הצורך
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download previous state (if exists)
+        uses: actions/download-artifact@v4
+        with:
+          name: timberland-state
+          path: .              # חשוב: לשפוך את ה־state לשורש הריפו
+        continue-on-error: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install playwright
+          playwright install chromium
+
+      - name: Run Telegram onboarding
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+        run: |
+          python telegram_onboarding.py
+
+      - name: Run Timberland checker (only at send hours)
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+        run: |
+          python timberland_checker.py
+
+      - name: Upload updated state files
+        uses: actions/upload-artifact@v4
+        with:
+          name: timberland-state
+          path: |
+            user_data.json
+            last_update_id.json
+            state.json
