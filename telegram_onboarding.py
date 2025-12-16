@@ -5,6 +5,9 @@ import requests
 # Telegram bot token from GitHub Secrets
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
+# Admin chat id (optional) - from GitHub Secrets or env
+ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")  # נשווה כמחרוזת
+
 # State files
 USER_DATA_FILE = "user_data.json"
 OFFSET_FILE = "last_update_id.json"
@@ -137,17 +140,94 @@ def parse_combined_message(text):
     return prefs, None
 
 
+def format_stats(user_data: dict) -> str:
+    total = len(user_data)
+    if total == 0:
+        return "📊 אין עדיין משתמשים רשומים בבוט."
+
+    gender_counts = {"men": 0, "women": 0, "kids": 0}
+    category_counts = {"shoes": 0, "clothing": 0, "both": 0}
+    price_min_list = []
+    price_max_list = []
+
+    for uid, prefs in user_data.items():
+        g = prefs.get("gender")
+        c = prefs.get("category")
+        if g in gender_counts:
+            gender_counts[g] += 1
+        if c in category_counts:
+            category_counts[c] += 1
+
+        pm = prefs.get("price_min")
+        px = prefs.get("price_max")
+        if isinstance(pm, int):
+            price_min_list.append(pm)
+        if isinstance(px, int):
+            price_max_list.append(px)
+
+    gender_labels = {
+        "men": "גברים",
+        "women": "נשים",
+        "kids": "ילדים",
+    }
+    category_labels = {
+        "shoes": "הנעלה",
+        "clothing": "ביגוד",
+        "both": "גם וגם",
+    }
+
+    lines = []
+    lines.append("📊 *סטטיסטיקות בוט טימברלנד*")
+    lines.append("")
+    lines.append(f"👥 סה\"כ משתמשים רשומים: *{total}*")
+    lines.append("")
+
+    lines.append("👤 לפי מגדר:")
+    for k, v in gender_counts.items():
+        if v > 0:
+            lines.append(f"• {gender_labels[k]}: {v}")
+
+    lines.append("")
+    lines.append("🧢 לפי סוג מוצר:")
+    for k, v in category_counts.items():
+        if v > 0:
+            lines.append(f"• {category_labels[k]}: {v}")
+
+    if price_min_list and price_max_list:
+        avg_min = sum(price_min_list) / len(price_min_list)
+        avg_max = sum(price_max_list) / len(price_max_list)
+        lines.append("")
+        lines.append(
+            f"💰 ממוצע טווח מחירים שהוגדר:\n"
+            f"min ≈ {int(avg_min)} ₪ | max ≈ {int(avg_max)} ₪"
+        )
+
+    return "\n".join(lines)
+
+
 def handle_message(chat_id, text, user_data):
     text = text.strip()
     chat_id_str = str(chat_id)
 
     print(f"handle_message: chat_id={chat_id_str}, text={text!r}")
 
-    # /start רק שולח הסבר
+    # /start - רק שולח הסבר
     if text == "/start":
         send_instructions(chat_id)
         return
 
+    # /stat או /stats - סטטיסטיקות
+    if text in ("/stat", "/stats"):
+        # אם הוגדר ADMIN_CHAT_ID - רק הוא רואה סטטיסטיקות
+        if ADMIN_CHAT_ID and chat_id_str != ADMIN_CHAT_ID:
+            send_message(chat_id, "פקודת /stats שמורה למנהל הבוט בלבד.")
+            return
+
+        stats_text = format_stats(user_data)
+        send_message(chat_id, stats_text)
+        return
+
+    # הודעה רגילה - ננסה לפרש כהעדפות
     prefs, error = parse_combined_message(text)
     if error:
         send_message(chat_id, error + "\n\nדוגמה: 1 A 43 0 300")
