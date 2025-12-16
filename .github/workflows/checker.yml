@@ -2,11 +2,11 @@ name: Timberland Checker
 
 on:
   schedule:
-    - cron: "0 */12 * * *"   # ריצה כל 12 שעות
-  workflow_dispatch:         # מאפשר להריץ ידנית מה-GitHub Actions
+    - cron: "0 */12 * * *"   # ריצה פעמיים ביום (כל 12 שעות)
+  workflow_dispatch:         # הפעלה ידנית לפי הצורך
 
 jobs:
-  checker:
+  run-checker:
     runs-on: ubuntu-latest
 
     steps:
@@ -17,7 +17,8 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: timberland-state
-        continue-on-error: true   # אם אין artifact עדיין - ממשיכים
+          path: .                     # <<< חשוב: להביא את הקבצים לשורש הפרויקט
+        continue-on-error: true       # לא להיכשל אם אין artifact עדיין
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -27,10 +28,8 @@ jobs:
       - name: Install dependencies
         run: |
           pip install -r requirements.txt
-
-      - name: Install Playwright browsers
-        run: |
-          python -m playwright install --with-deps chromium
+          pip install playwright
+          playwright install chromium
 
       - name: Run Timberland checker
         env:
@@ -38,7 +37,7 @@ jobs:
         run: |
           python timberland_checker.py
 
-      - name: Upload state files
+      - name: Upload updated state files
         uses: actions/upload-artifact@v4
         with:
           name: timberland-state
@@ -46,3 +45,4 @@ jobs:
             user_data.json
             last_update_id.json
             state.json
+            *.json
