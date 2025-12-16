@@ -1,121 +1,53 @@
-name: CI & Scheduler - Timberland Bot
+name: Timberland Bot
 
 on:
-  push:
-    branches: [ "main" ]
-  pull_request:
-    branches: [ "main" ]
-  workflow_dispatch: {}
   schedule:
-    # ריצות מתוזמנות פעמיים ביום (07:05 ו-19:05 לפי UTC)
-    - cron: "5 7,19 * * *"
-
-concurrency:
-  group: timberland-${{ github.ref }}
-  cancel-in-progress: false
-
-permissions:
-  contents: read
+    - cron: "*/30 * * * *"  # כל 30 דקות
+  workflow_dispatch:
 
 jobs:
-  ci:
-    name: CI (install + smoke tests)
+  timberland-bot:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+
     steps:
-      - name: Checkout
+      - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Setup Python
+      - name: Download state artifact if exists
+        uses: actions/download-artifact@v4
+        with:
+          name: timberland-state
+        continue-on-error: true
+
+      - name: Show workspace files (debug)
+        run: |
+          ls -R
+
+      - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-          cache: "pip"
 
-      - name: Install dependencies (pip + Playwright)
+      - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip
           pip install -r requirements.txt
-          python -m playwright install --with-deps
 
-      - name: Lint (non-blocking)
-        run: |
-          python -m pip install flake8
-          flake8 --max-line-length=120 || true
-
-      - name: Dry-run scraper (fallback to normal run)
+      - name: Run Telegram onboarding
         env:
-          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
         run: |
-          set -e
-          python - << 'PY'
-          import sys, subprocess
-          cmd = ["python", "main_playwright.py", "--dry-run"]
-          try:
-              subprocess.check_call(cmd)
-          except subprocess.CalledProcessError:
-              subprocess.check_call(["python", "main_playwright.py"])
-          except SystemExit:
-              pass
-          print("playwright smoke OK")
-          PY
+          python telegram_onboarding.py
 
-      - name: Import sanity for bot
+      - name: Run Timberland checker
         env:
-          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
         run: |
-          python - << 'PY'
-          import importlib.util
-          spec = importlib.util.spec_from_file_location("bot","main_bot.py")
-          m = importlib.util.module_from_spec(spec)
-          spec.loader.exec_module(m)
-          print("main_bot imported OK")
-          PY
+          python timberland_checker.py
 
-      - name: Upload artifacts (optional state files)
-        if: always()
+      - name: Upload state artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ci-artifacts
+          name: timberland-state
           path: |
-            *.log
             user_data.json
-            price_history.json
-          if-no-files-found: ignore
-
-  scheduled_run:
-    name: Scheduled scan & notify (per-user)
-    if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 35
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-          cache: "pip"
-
-      - name: Install dependencies (pip + Playwright)
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          python -m playwright install --with-deps
-
-      - name: Run per-user batch
-        env:
-          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
-        run: |
-          python run_batch.py
-
-      - name: Upload artifacts (results & state)
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: run-artifacts
-          path: |
-            out/*.json
-            state/*.json
-          if-no-files-found: ignore
+            last_update_id.json
