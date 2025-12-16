@@ -3,7 +3,7 @@
 import os
 
 # --- טלגרם ---
-# תמיכה גם ב-TELEGRAM_BOT_TOKEN (מה-workflow החדש) וגם ב-TELEGRAM_TOKEN (מהקיים)
+# תמיכה גם ב-TELEGRAM_BOT_TOKEN (מה-GitHub Actions) וגם ב-TELEGRAM_TOKEN (אם מוגדר מקומית)
 TELEGRAM_TOKEN = (os.getenv("TELEGRAM_BOT_TOKEN") or os.getenv("TELEGRAM_TOKEN") or "").strip()  # חובה
 
 # תמיכה גם ב-ADMIN_CHAT_ID וגם ב-CHAT_ID (לא חובה)
@@ -17,11 +17,12 @@ LOAD_MORE_DELAY = 1500         # ms
 
 # --- קבצים ---
 USER_DATA_FILE = "user_data.json"
-LAST_UPDATE_ID_FILE = "last_update_id.json"   # חדש - חובה ל-onboarding (offset ל-getUpdates)
+LAST_UPDATE_ID_FILE = "last_update_id.json"
 STATE_FILE = "shoes_state.json"
 SIZE_MAP_FILE = "size_map.json"
+APPAREL_SIZE_MAP_FILE = "apparel_size_map.json"
 
-# --- קטגוריות ---
+# --- קטגוריות (נעליים) ---
 CATEGORIES = {
     "men": {
         "name": "גברים",
@@ -40,12 +41,20 @@ CATEGORIES = {
     }
 }
 
+# --- קטגוריות (ביגוד) ---
+# לפי הדוגמה שסיפקת: https://www.timberland.co.il/men/clothing?price=68_1001&size=4
+CLOTHING_URLS = {
+    "men": "https://www.timberland.co.il/men/clothing",
+    "women": "https://www.timberland.co.il/women/clothing",
+    "kids": "https://www.timberland.co.il/kids/clothing"
+}
+
 # --- הודעות ---
 MESSAGES = {
-    "welcome": "👋 שלום {name}!\n\n🔔 אני אעזור לך לקבל התראות על נעלי טימברלנד חדשות!\n\n👟 באיזו קטגוריה אתה מעוניין?",
+    "welcome": "👋 שלום {name}!\n\n🔔 אני אעזור לך לקבל התראות על טימברלנד!\n\n👟 באיזו קטגוריה אתה מעוניין?",
     "size_prompt": "📏 מה המידה שלך ב-{category}?\n\n🔢 מידות זמינות: {size_range}",
     "price_prompt": "💰 מהו טווח המחירים? (למשל: 100-300)",
-    "success": "✅ מעולה! ההעדפות נשמרו בהצלחה!\n\n🎯 תקבל התראות על נעליים חדשות פעמיים ביום\n📱 השתמש ב-/show כדי לראות את ההעדפות\n🔄 השתמש ב-/reset כדי לאפס",
+    "success": "✅ מעולה! ההעדפות נשמרו בהצלחה!\n\n🎯 תקבל התראות פעמיים ביום\n📱 השתמש ב-/show כדי לראות את ההעדפות\n🔄 השתמש ב-/reset כדי לאפס",
     "no_prefs": "❌ אין לך עדיין העדפות מוגדרות.\n\n🚀 שלח /start כדי להתחיל!",
     "reset_success": "✅ ההעדפות שלך נמחקו. תוכל להתחיל מחדש עם /start",
     "reset_no_data": "ℹ️ אין לך העדפות שמורות."
