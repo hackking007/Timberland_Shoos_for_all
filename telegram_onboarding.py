@@ -1,194 +1,249 @@
 import os
 import json
 import requests
-from config import USER_DATA_FILE, LAST_UPDATE_ID_FILE, TELEGRAM_BOT_TOKEN
 
-API_URL = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
+# Telegram bot token from GitHub Secrets
+BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
-# ---------------------------------------------
-# Telegram helpers
-# ---------------------------------------------
-def send_message(chat_id, text):
-    url = f"{API_URL}/sendMessage"
-    payload = {"chat_id": chat_id, "text": text}
+# State files
+USER_DATA_FILE = "user_data.json"
+OFFSET_FILE = "last_update_id.json"
+
+
+def telegram_url(method: str) -> str:
+    return f"https://api.telegram.org/bot{BOT_TOKEN}/{method}"
+
+
+def load_json(path, default):
     try:
-        requests.post(url, data=payload, timeout=20)
-    except Exception:
-        pass
-
-
-# ---------------------------------------------
-# State helpers
-# ---------------------------------------------
-def load_user_data():
-    try:
-        with open(USER_DATA_FILE, "r", encoding="utf-8") as f:
+        if not os.path.exists(path):
+            return default
+        with open(path, "r", encoding="utf-8") as f:
             return json.load(f)
-    except:
-        return {}
+    except Exception:
+        return default
 
 
-def save_user_data(data):
+def save_json(path, data):
     try:
-        with open(USER_DATA_FILE, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-    except:
-        pass
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+    except Exception as e:
+        print(f"Error saving {path}: {e}")
 
 
-def load_last_update_id():
+def send_message(chat_id, text):
+    if not BOT_TOKEN:
+        print("ERROR: TELEGRAM_BOT_TOKEN is not set - cannot send_message")
+        return
+
     try:
-        with open(LAST_UPDATE_ID_FILE, "r", encoding="utf-8") as f:
-            return json.load(f).get("last_update_id")
-    except:
-        return None
+        resp = requests.post(
+            telegram_url("sendMessage"),
+            json={"chat_id": chat_id, "text": text},
+            timeout=20,
+        )
+        print(f"send_message to {chat_id} -> status {resp.status_code}")
+        if not resp.ok:
+            print("send_message response text:", resp.text)
+    except Exception as e:
+        print(f"Error sending message to {chat_id}: {e}")
 
 
-def save_last_update_id(update_id):
-    try:
-        with open(LAST_UPDATE_ID_FILE, "w", encoding="utf-8") as f:
-            json.dump({"last_update_id": update_id}, f)
-    except:
-        pass
+def send_instructions(chat_id):
+    text = (
+        "ברוך הבא לבוט טימברלנד 👟\n\n"
+        "כדי להגדיר מעקב בהודעה אחת, שלח הודעה בפורמט הבא:\n\n"
+        "<gender> <type> <size> <min_price> <max_price>\n\n"
+        "הסבר:\n"
+        "gender:\n"
+        "  1 = גברים\n"
+        "  2 = נשים\n"
+        "  3 = ילדים\n\n"
+        "type:\n"
+        "  A = הנעלה\n"
+        "  B = ביגוד\n"
+        "  C = גם וגם\n\n"
+        "דוגמה:\n"
+        "1 A 43 0 300\n"
+        "זה אומר: גברים, הנעלה, מידה 43, מחיר 0 עד 300 ₪."
+    )
+    send_message(chat_id, text)
 
 
-# ---------------------------------------------
-# Parse user message into preferences
-# ---------------------------------------------
-def parse_preference_message(msg: str):
+def parse_combined_message(text):
     """
-    Expected format:
-    <gender> <product_type> <size> <min_price> <max_price>
+    מצפה לפורמט:
+    <gender> <type> <size> <min_price> <max_price>
 
     gender:
         1 = men
         2 = women
         3 = kids
 
-    product_type:
+    type:
         A = shoes
         B = clothing
-        C = both  (treat as shoes for now, unless you want different behavior)
+        C = both
 
-    Example:
-        "1 A 43 0 300"
+    example:
+        '1 A 43 0 300'
     """
-
-    parts = msg.strip().split()
+    clean = text.strip().replace(",", " ")
+    parts = [p for p in clean.split() if p]
 
     if len(parts) != 5:
-        return None
+        return None, (
+            "❗ פורמט לא תקין.\n"
+            "אנא השתמש בפורמט: 1 A 43 0 300\n"
+            "gender: 1/2/3, type: A/B/C, מידה, מינימום, מקסימום."
+        )
 
-    gender_raw, prod_raw, size_raw, min_p_raw, max_p_raw = parts
+    gender_raw, type_raw, size_raw, min_raw, max_raw = parts
 
-    # ---- gender ----
-    gender_map = {
-        "1": "men",
-        "2": "women",
-        "3": "kids"
-    }
-
+    gender_map = {"1": "men", "2": "women", "3": "kids"}
     gender = gender_map.get(gender_raw)
     if not gender:
-        return None
+        return None, "ערך gender לא תקין. השתמש ב-1 לגברים, 2 לנשים, 3 לילדים."
 
-    # ---- product type ----
-    prod_map = {
+    type_map = {
         "A": "shoes",
         "B": "clothing",
-        "C": "both"
+        "C": "both",
+    }
+    category = type_map.get(type_raw.upper())
+    if not category:
+        return None, "ערך type לא תקין. השתמש ב-A/B/C."
+
+    size = size_raw.strip()
+    if not size:
+        return None, "מידה לא תקינה."
+
+    if not (min_raw.isdigit() and max_raw.isdigit()):
+        return None, "המחירים חייבים להיות מספרים בלבד."
+
+    price_min = int(min_raw)
+    price_max = int(max_raw)
+    if price_min > price_max:
+        return None, "המחיר המינימלי לא יכול להיות גדול מהמקסימלי."
+
+    prefs = {
+        "gender": gender,          # men / women / kids
+        "category": category,      # shoes / clothing / both
+        "size": size,              # נשמר כמחרוזת
+        "price_min": price_min,
+        "price_max": price_max,
+    }
+    return prefs, None
+
+
+def handle_message(chat_id, text, user_data):
+    text = text.strip()
+    chat_id_str = str(chat_id)
+
+    print(f"handle_message: chat_id={chat_id_str}, text={text!r}")
+
+    # /start רק שולח הסבר
+    if text == "/start":
+        send_instructions(chat_id)
+        return
+
+    prefs, error = parse_combined_message(text)
+    if error:
+        send_message(chat_id, error + "\n\nדוגמה: 1 A 43 0 300")
+        return
+
+    # שמירה בפורמט שה-checker מצפה לו
+    user_data[chat_id_str] = {
+        "chat_id": chat_id,
+        "state": "ready",
+        **prefs,
     }
 
-    product_type = prod_map.get(prod_raw.upper())
-    if not product_type:
-        return None
+    save_json(USER_DATA_FILE, user_data)
 
-    # ---- size ----
-    try:
-        size = int(size_raw)
-    except:
-        return None
-
-    # ---- price range ----
-    try:
-        min_price = int(min_p_raw)
-        max_price = int(max_p_raw)
-    except:
-        return None
-
-    price_range = f"{min_price}-{max_price}"
-
-    return {
-        "gender": gender,
-        "product_type": product_type,
-        "size": size,
-        "price": price_range
+    gender_he = {"men": "גברים", "women": "נשים", "kids": "ילדים"}
+    category_he = {
+        "shoes": "הנעלה",
+        "clothing": "ביגוד",
+        "both": "הנעלה + ביגוד",
     }
 
+    text_confirm = (
+        "🎉 ההגדרות נשמרו בהצלחה!\n\n"
+        f"מגדר: {gender_he.get(prefs['gender'], prefs['gender'])}\n"
+        f"סוג מוצר: {category_he.get(prefs['category'], prefs['category'])}\n"
+        f"מידה: {prefs['size']}\n"
+        f"טווח מחירים: {prefs['price_min']} - {prefs['price_max']} ₪\n\n"
+        "הבוט יסרוק עבורך בסבב הקרוב וישלח עדכונים 👟"
+    )
+    send_message(chat_id, text_confirm)
 
-# ---------------------------------------------
-# Main onboarding logic
-# ---------------------------------------------
-def process_updates():
-    last_update_id = load_last_update_id()
-    params = {"offset": last_update_id + 1} if last_update_id else {}
 
-    r = requests.get(f"{API_URL}/getUpdates", params=params, timeout=20)
-    data = r.json()
+def main():
+    print("=== telegram_onboarding.py starting ===")
+
+    if not BOT_TOKEN:
+        print("ERROR: TELEGRAM_BOT_TOKEN is not set in environment!")
+        return
+
+    user_data = load_json(USER_DATA_FILE, {})
+    offset_data = load_json(OFFSET_FILE, {"last_update_id": None})
+    last_update_id = offset_data.get("last_update_id")
+
+    params = {}
+    if last_update_id is not None:
+        params["offset"] = last_update_id + 1
+
+    print("Calling getUpdates with params:", params)
+
+    try:
+        resp = requests.get(telegram_url("getUpdates"), params=params, timeout=20)
+    except Exception as e:
+        print("Error calling getUpdates:", e)
+        return
+
+    print("getUpdates HTTP status:", resp.status_code)
+    try:
+        data = resp.json()
+    except Exception as e:
+        print("Error decoding JSON from getUpdates:", e)
+        return
 
     if not data.get("ok"):
+        print("Error from Telegram (ok=false):", data)
         return
 
     updates = data.get("result", [])
+    print(f"getUpdates returned {len(updates)} updates")
+
     if not updates:
+        print("No new updates.")
         return
 
-    user_data = load_user_data()
+    max_update_id = last_update_id or 0
 
-    for upd in updates:
-        update_id = upd["update_id"]
-        message = upd.get("message", {})
-        text = message.get("text")
-        chat_id = message.get("chat", {}).get("id")
+    for update in updates:
+        u_id = update["update_id"]
+        if u_id > max_update_id:
+            max_update_id = u_id
 
-        if not text or not chat_id:
+        message = update.get("message") or update.get("edited_message")
+        if not message:
             continue
 
-        parsed = parse_preference_message(text)
+        chat = message.get("chat", {})
+        chat_id = chat.get("id")
+        text = message.get("text", "")
 
-        if not parsed:
-            send_message(
-                chat_id,
-                "❗ פורמט לא תקין.\n"
-                "שלחו הודעה אחת בלבד בפורמט:\n\n"
-                "`<gender> <type> <size> <min> <max>`\n\n"
-                "דוגמה:\n`1 A 43 0 300`\n\n"
-                "מדריך קצר:\n"
-                "1 = גברים | 2 = נשים | 3 = ילדים\n"
-                "A = הנעלה | B = ביגוד | C = שניהם\n"
-            )
-        else:
-            # Save user preferences
-            user_data[str(chat_id)] = {
-                "chat_id": chat_id,
-                **parsed
-            }
+        if not chat_id or not text:
+            continue
 
-            save_user_data(user_data)
+        handle_message(chat_id, text, user_data)
 
-            send_message(
-                chat_id,
-                "🎉 ההגדרות נשמרו בהצלחה!\n"
-                f"קטגוריה: {parsed['gender']}\n"
-                f"סוג מוצר: {parsed['product_type']}\n"
-                f"מידה: {parsed['size']}\n"
-                f"טווח מחירים: {parsed['price']}\n\n"
-                "הבוט יסרוק עבורך ויעדכן בהודעות הקרובות."
-            )
-
-        # Update the offset
-        save_last_update_id(update_id)
+    save_json(OFFSET_FILE, {"last_update_id": max_update_id})
+    print("Onboarding sync done. New last_update_id:", max_update_id)
 
 
 if __name__ == "__main__":
-    process_updates()
+    main()
