@@ -1,3 +1,16 @@
+# State files - are stored as GitHub Actions artifacts, not in repo
 user_data.json
 last_update_id.json
 shoes_state.json
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+
+# OS
+.DS_Store
+Thumbs.db
