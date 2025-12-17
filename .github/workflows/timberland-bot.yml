@@ -20,6 +20,17 @@ jobs:
           path: .
         continue-on-error: true
 
+      - name: Debug - list files after download
+        run: |
+          echo "PWD:"
+          pwd
+          echo "FILES:"
+          ls -la
+          echo "last_update_id.json (if exists):"
+          if [ -f last_update_id.json ]; then cat last_update_id.json; else echo "MISSING"; fi
+          echo "user_data.json (if exists):"
+          if [ -f user_data.json ]; then cat user_data.json; else echo "MISSING"; fi
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -28,7 +39,7 @@ jobs:
       - name: Install dependencies
         run: |
           pip install -r requirements.txt
-          python -m playwright install chromium
+          playwright install chromium
 
       - name: Run Telegram onboarding
         env:
@@ -39,9 +50,18 @@ jobs:
       - name: Run Timberland checker
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          FORCE_RUN: "1"
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          IL_UTC_OFFSET: "2"
+          FORCE_CHECKER: "1"
         run: |
           python timberland_checker.py
+
+      - name: Debug - list files before upload
+        run: |
+          echo "FILES BEFORE UPLOAD:"
+          ls -la
+          echo "last_update_id.json:"
+          if [ -f last_update_id.json ]; then cat last_update_id.json; else echo "MISSING"; fi
 
       - name: Upload updated state files
         uses: actions/upload-artifact@v4
