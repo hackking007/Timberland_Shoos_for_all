@@ -20,6 +20,12 @@ jobs:
           path: .
         continue-on-error: true
 
+      - name: Ensure state files exist
+        run: |
+          test -f user_data.json || echo "{}" > user_data.json
+          test -f last_update_id.json || echo '{"last_update_id": 0}' > last_update_id.json
+          test -f shoes_state.json || echo "{}" > shoes_state.json
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -28,7 +34,7 @@ jobs:
       - name: Install dependencies
         run: |
           pip install -r requirements.txt
-          playwright install chromium
+          python -m playwright install --with-deps chromium
 
       - name: Run Telegram onboarding
         env:
@@ -43,11 +49,10 @@ jobs:
           python timberland_checker.py
 
       - name: Upload updated state files
-        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: timberland-state
           path: |
             user_data.json
             last_update_id.json
-            state.json
+            shoes_state.json
