@@ -56,7 +56,7 @@ def save_json(path: str, data):
         pass
 
 def send_message(chat_id: int, text: str):
-    # IMPORTANT: no parse_mode to avoid "can't parse entities" errors
+    # No parse_mode to avoid "can't parse entities"
     url = f"{API}/sendMessage"
     payload = {
         "chat_id": chat_id,
@@ -64,22 +64,10 @@ def send_message(chat_id: int, text: str):
         "disable_web_page_preview": True,
     }
     r = requests.post(url, data=payload, timeout=30)
-    log(f"send_message to {chat_id} -> {r.status_code}")
+    log(f"send_message to {chat_id} -> status {r.status_code}")
     return r
 
 def parse_one_line(text: str):
-    """
-    Expected:
-    <gender> <type> <size> <min_price> <max_price>
-
-    gender: 1/2/3
-    type: A/B/C
-
-    size:
-    - A: shoe size numeric (e.g. 43)
-    - B: clothing size (XS,S,M,L,XL,XXL,XXXL)
-    - C: shoeSize/clothingSize e.g. 40/L
-    """
     parts = text.strip().split()
     if len(parts) != 5:
         return None
@@ -144,9 +132,6 @@ def handle_message(chat_id: int, text: str, user_data: dict):
     if text == "":
         return
 
-    log(f"handle_message chat_id={chat_id} text='{text}'")
-
-    # Ensure user entry exists
     user = user_data.get(str(chat_id), {"chat_id": chat_id})
     user_data[str(chat_id)] = user
 
@@ -156,7 +141,6 @@ def handle_message(chat_id: int, text: str, user_data: dict):
         return
 
     if text == "/sync":
-        # "mark and clear" - implemented in main by setting a flag
         user["request_sync"] = True
         send_message(chat_id, "✅ Sync requested. I will clear backlog on next run.")
         return
@@ -165,14 +149,10 @@ def handle_message(chat_id: int, text: str, user_data: dict):
         total = len(user_data)
         ready = sum(1 for v in user_data.values() if v.get("state") == "ready")
         awaiting = total - ready
-        send_message(
-            chat_id,
-            f"📊 סטטוס בוט\n\nTotal users: {total}\nReady: {ready}\nAwaiting setup: {awaiting}"
-        )
+        send_message(chat_id, f"📊 סטטוס בוט\n\nTotal users: {total}\nReady: {ready}\nAwaiting setup: {awaiting}")
         return
 
     if text == "/start":
-        # Send welcome only once unless reset
         if not user.get("welcome_sent"):
             send_message(chat_id, WELCOME_TEXT)
             user["welcome_sent"] = True
@@ -212,21 +192,22 @@ def handle_message(chat_id: int, text: str, user_data: dict):
     gender_label = {"men": "גברים", "women": "נשים", "kids": "ילדים"}[parsed["gender"]]
     category_label = {"shoes": "הנעלה", "clothing": "ביגוד", "both": "גם וגם"}[parsed["category"]]
 
-    size_lines = []
+    lines = [
+        "✅ הגדרות נשמרו בהצלחה!",
+        "",
+        f"מגדר: {gender_label}",
+        f"סוג מוצר: {category_label}",
+    ]
     if parsed["category"] in ("shoes", "both"):
-        size_lines.append(f"מידה נעליים: {parsed['shoes_size']}")
+        lines.append(f"מידה נעליים: {parsed['shoes_size']}")
     if parsed["category"] in ("clothing", "both"):
-        size_lines.append(f"מידה ביגוד: {parsed['clothing_size']}")
-
-    confirm = (
-        "✅ הגדרות נשמרו בהצלחה!\n\n"
-        f"מגדר: {gender_label}\n"
-        f"סוג מוצר: {category_label}\n"
-        + "\n".join(size_lines) + "\n"
-        f"טווח מחירים: {parsed['price_min']} - {parsed['price_max']} ₪\n\n"
-        "🕖 מוצרים נשלחים פעמיים ביום (שעון ישראל): 07:00 ו-19:00"
-    )
-    send_message(chat_id, confirm)
+        lines.append(f"מידה ביגוד: {parsed['clothing_size']}")
+    lines += [
+        f"טווח מחירים: {parsed['price_min']} - {parsed['price_max']} ₪",
+        "",
+        "🕖 מוצרים נשלחים פעמיים ביום (שעון ישראל): 07:00 ו-19:00",
+    ]
+    send_message(chat_id, "\n".join(lines))
 
 def main():
     if not TELEGRAM_BOT_TOKEN:
@@ -241,41 +222,35 @@ def main():
     if not isinstance(last_update, int):
         last_update = 0
 
-    # If any user requested /sync, we clear backlog by jumping to latest update_id
+    # 1) IMPORTANT: if sync requested - do NOT process messages and do NOT send anything (except the /sync ack which was already sent)
     sync_requested = any(v.get("request_sync") for v in user_data.values())
-
     if sync_requested:
-        # Fetch latest updates without processing them, just to get max update_id
-        r = requests.get(f"{API}/getUpdates", params={}, timeout=30)
+        # Only fetch updates to compute max_update_id, then advance pointer and exit
+        params = {"offset": last_update + 1}
+        r = requests.get(f"{API}/getUpdates", params=params, timeout=30)
         data = r.json()
         updates = data.get("result", [])
+        log(f"getUpdates returned {len(updates)} updates")
+
         max_update_id = last_update
         for upd in updates:
             uid = upd.get("update_id")
             if isinstance(uid, int):
                 max_update_id = max(max_update_id, uid)
 
-        # Clear sync flag and save
         for v in user_data.values():
             v.pop("request_sync", None)
 
         save_json(USER_DATA_FILE, user_data)
         save_json(LAST_UPDATE_ID_FILE, {"last_update_id": max_update_id})
-        log(f"Sync done. Backlog cleared. last_update_id={max_update_id}")
+
+        log(f"Backlog cleared via /sync. last_update_id set to {max_update_id}")
         return
 
-    params = {}
-    if last_update >= 0:
-        params["offset"] = last_update + 1
-
-    log(f"Calling getUpdates with params: {params}")
+    # 2) Normal run: process only NEW updates since last_update_id
+    params = {"offset": last_update + 1}
     r = requests.get(f"{API}/getUpdates", params=params, timeout=30)
-    log(f"getUpdates status: {r.status_code}")
-
     data = r.json()
-    if not data.get("ok"):
-        raise SystemExit(f"Telegram getUpdates failed: {data}")
-
     updates = data.get("result", [])
     log(f"getUpdates returned {len(updates)} updates")
 
