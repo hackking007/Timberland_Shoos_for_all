@@ -3,23 +3,31 @@ import json
 import os
 import time
 import requests
-from datetime import datetime, timezone, timedelta
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from bs4 import BeautifulSoup
 from playwright.sync_api import sync_playwright
 
+# ---------------- Files (must match bot.yml artifact paths) ----------------
 USER_DATA_FILE = "user_data.json"
-STATE_FILE = "state.json"
+SHOES_STATE_FILE = "shoes_state.json"          # match bot.yml
 SHOES_SIZE_MAP_FILE = "size_map.json"
-APPAREL_SIZE_MAP_FILE = "apparel_size_map.json"
+APPAREL_SIZE_MAP_FILE = "apparel_size_map.json"  # you must have this file in repo
 
+# ---------------- Telegram ----------------
 TELEGRAM_BOT_TOKEN = (os.getenv("TELEGRAM_BOT_TOKEN") or os.getenv("TELEGRAM_TOKEN") or "").strip()
 API = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
 
+# ---------------- Behavior ----------------
 ENABLE_DEBUG_LOGS = True
 
-IL_TZ = timezone(timedelta(hours=2))  # Israel (no DST handling here, good enough for your use)
-SEND_HOURS_IL = {7, 19}
+IL_TZ = ZoneInfo("Asia/Jerusalem")
+SEND_HOURS_IL = {7, 19}  # 07:00 and 19:00 IL time
+
+# Hard limits to avoid flooding
+MAX_NEW_ITEMS_PER_USER_PER_RUN = 12
+SLEEP_BETWEEN_SENDS_SEC = 0.4
 
 def log(msg: str):
     if ENABLE_DEBUG_LOGS:
@@ -69,8 +77,7 @@ def in_send_window():
     return now_il.hour in SEND_HOURS_IL, now_il
 
 def is_manual_run():
-    # GitHub Actions sets this env
-    # workflow_dispatch -> manual
+    # GitHub Actions sets this env for workflow_dispatch
     return (os.getenv("GITHUB_EVENT_NAME") or "").strip() == "workflow_dispatch"
 
 def build_shoes_url(gender: str, shoe_size: str, price_min: int, price_max: int, shoes_size_map: dict):
@@ -105,43 +112,64 @@ def build_clothing_url(gender: str, clothing_size: str, price_min: int, price_ma
 
     return f"{base}?price={price_min}_{price_max}&size={size_code}&product_list_order=low_to_high"
 
-def scrape_products(page_html: str, base_url: str):
+def normalize_link(href: str, fallback: str):
+    href = (href or "").strip()
+    if href.startswith("http"):
+        return href
+    if href.startswith("/"):
+        return "https://www.timberland.co.il" + href
+    return fallback
+
+def extract_price_text(product_node):
+    # try multiple patterns
+    candidates = []
+    for sel in [".special-price .price", ".price", ".price-wrapper", "[data-price-amount]"]:
+        el = product_node.select_one(sel)
+        if not el:
+            continue
+        txt = el.get_text(" ", strip=True)
+        if txt:
+            candidates.append(txt)
+    if candidates:
+        return candidates[0]
+    return ""
+
+def scrape_products(page_html: str, page_url: str):
     soup = BeautifulSoup(page_html, "html.parser")
     items = []
 
-    # This selector may change - keep it flexible
-    products = soup.select("li.product-item") or soup.select(".product-item")
+    # Timberland pages may vary:
+    # - li.product-item (Magento)
+    # - div.product (older layout)
+    products = soup.select("li.product-item")
+    if not products:
+        products = soup.select("div.product")
+
     for p in products:
-        title_el = p.select_one(".product-item-link") or p.select_one("a")
-        if not title_el:
+        # Title + link
+        a = p.select_one("a.product-item-link") or p.select_one("a")
+        if not a:
             continue
-        title = title_el.get_text(strip=True)
 
-        href = title_el.get("href") or ""
-        if href and href.startswith("/"):
-            link = "https://www.timberland.co.il" + href
-        elif href.startswith("http"):
-            link = href
-        else:
-            link = base_url
+        title = a.get_text(strip=True) or ""
+        href = a.get("href") or ""
+        link = normalize_link(href, page_url)
 
+        # Image
         img_el = p.select_one("img")
         img = ""
         if img_el:
             img = img_el.get("data-src") or img_el.get("src") or ""
-            if img and img.startswith("//"):
+            if img.startswith("//"):
                 img = "https:" + img
 
-        price_el = p.select_one(".price") or p.select_one(".special-price") or p.select_one("[data-price-amount]")
-        price_text = price_el.get_text(" ", strip=True) if price_el else ""
+        price_text = extract_price_text(p)
 
-        # stable id (use link)
-        uid = link
-
+        uid = link  # stable dedupe key
         items.append({
             "id": uid,
-            "title": title,
-            "price": price_text,
+            "title": title[:140],
+            "price": price_text[:80],
             "link": link,
             "img": img,
         })
@@ -158,9 +186,24 @@ def scrape_products(page_html: str, base_url: str):
 
 def fetch_url_html(playwright, url: str):
     browser = playwright.chromium.launch(headless=True)
-    page = browser.new_page()
+    context = browser.new_context(locale="he-IL")
+    page = context.new_page()
     page.goto(url, wait_until="domcontentloaded", timeout=60000)
     page.wait_for_timeout(2000)
+
+    # Try "load more" if exists
+    clicks = 0
+    while clicks < 8:
+        btn = page.query_selector("a.action.more") or page.query_selector("button.action.more")
+        if not btn:
+            break
+        try:
+            btn.click()
+            page.wait_for_timeout(1200)
+            clicks += 1
+        except Exception:
+            break
+
     html = page.content()
     browser.close()
     return html
@@ -175,8 +218,12 @@ def check_and_send_for_user(pw, user_id: str, u: dict, global_state: dict, shoes
 
     gender = u.get("gender")
     category = u.get("category")
-    price_min = int(u.get("price_min", 0))
-    price_max = int(u.get("price_max", 999999))
+
+    try:
+        price_min = int(u.get("price_min", 0))
+        price_max = int(u.get("price_max", 999999))
+    except Exception:
+        price_min, price_max = 0, 999999
 
     urls = []
 
@@ -194,43 +241,50 @@ def check_and_send_for_user(pw, user_id: str, u: dict, global_state: dict, shoes
             if url:
                 urls.append(("clothing", url))
 
+    # IMPORTANT: do NOT spam user with errors here.
+    # If no url can be built, we silently skip.
     if not urls:
-        send_message(chat_id, "❌ אין אפשרות לבנות URL מההגדרות שלך. נסה /reset והגדרה מחדש.")
+        log(f"User {user_id}: cannot build URL (gender={gender}, category={category}) - skip")
         return
 
     user_state = global_state.get(user_id, {})
     sent_ids = set(user_state.get("sent_ids", []))
 
-    total_found = 0
-    total_new = 0
+    new_sent = 0
 
     for kind, url in urls:
         log(f"User {user_id} scan {kind} URL: {url}")
+
         html = fetch_url_html(pw, url)
         items = scrape_products(html, url)
-        total_found += len(items)
 
         for it in items:
             if it["id"] in sent_ids:
                 continue
 
-            caption = f"{it['title']}\n{it['price']}\n{it['link']}"
+            caption = f"{it['title']}\n{it['price']}\n{it['link']}".strip()
+
             if it["img"]:
                 send_photo(chat_id, it["img"], caption)
             else:
                 send_message(chat_id, caption)
 
             sent_ids.add(it["id"])
-            total_new += 1
-            time.sleep(0.5)
+            new_sent += 1
 
+            time.sleep(SLEEP_BETWEEN_SENDS_SEC)
+
+            if new_sent >= MAX_NEW_ITEMS_PER_USER_PER_RUN:
+                break
+
+        if new_sent >= MAX_NEW_ITEMS_PER_USER_PER_RUN:
+            break
+
+    # Save updated state
     global_state[user_id] = {"sent_ids": list(sent_ids)}
 
-    # Summary - short, no HTML
-    if total_found == 0:
-        send_message(chat_id, "לא נמצאו פריטים חדשים לפי ההגדרות שלך כרגע.")
-    else:
-        send_message(chat_id, f"סיכום: נמצאו {total_found} פריטים. נשלחו {total_new} חדשים.")
+    # IMPORTANT: no summary, no "no items" message.
+    log(f"User {user_id}: new_sent={new_sent}")
 
 def main():
     if not TELEGRAM_BOT_TOKEN:
@@ -257,8 +311,7 @@ def main():
         log("No registered users found in user_data.json")
         return
 
-    global_state = load_json(STATE_FILE, {})
-
+    global_state = load_json(SHOES_STATE_FILE, {})
     shoes_size_map = load_json(SHOES_SIZE_MAP_FILE, {})
     apparel_size_map = load_json(APPAREL_SIZE_MAP_FILE, {})
 
@@ -266,7 +319,7 @@ def main():
         for user_id, u in user_data.items():
             check_and_send_for_user(pw, user_id, u, global_state, shoes_size_map, apparel_size_map)
 
-    save_json(STATE_FILE, global_state)
+    save_json(SHOES_STATE_FILE, global_state)
     log("Checker done.")
 
 if __name__ == "__main__":
