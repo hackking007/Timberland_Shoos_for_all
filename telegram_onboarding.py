@@ -1,6 +1,5 @@
 # telegram_onboarding.py
 import json
-import os
 import re
 import requests
 
@@ -10,6 +9,7 @@ from config import (
     TELEGRAM_BOT_TOKEN,
     WELCOME_TEXT,
     ENABLE_DEBUG_LOGS,
+    CLOTHING_SIZE_MAP,
 )
 
 API = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
@@ -61,10 +61,10 @@ def parse_one_line(text: str):
 
     size:
     - A: numeric (shoe size)
-    - B: S/M/L/XL/XXL/XXXL (or XS)
+    - B: XS/S/M/L/XL/XXL/XXXL
     - C: shoeSize/clothingSize e.g. 40/L
     """
-    parts = text.strip().split()
+    parts = (text or "").strip().split()
     if len(parts) != 5:
         return None
 
@@ -96,21 +96,22 @@ def parse_one_line(text: str):
 
     elif category == "clothing":
         s = size_raw.upper()
-        if s not in ("XS", "S", "M", "L", "XL", "XXL", "XXXL"):
+        if s not in CLOTHING_SIZE_MAP:
             return None
         clothing_size = s
 
     else:
-        # both: expect 40/L
         if "/" not in size_raw:
             return None
         a, b = size_raw.split("/", 1)
         a = a.strip()
         b = b.strip().upper()
+
         if not re.fullmatch(r"\d{2}", a):
             return None
-        if b not in ("XS", "S", "M", "L", "XL", "XXL", "XXXL"):
+        if b not in CLOTHING_SIZE_MAP:
             return None
+
         shoes_size = a
         clothing_size = b
 
@@ -128,17 +129,16 @@ def handle_message(chat_id: int, text: str, user_data: dict):
     text = (text or "").strip()
     log(f"handle_message: chat_id={chat_id}, text='{text}'")
 
-    # 1) Ignore empty messages completely (prevents spam "format invalid")
+    # Ignore empty messages (prevents spam "format invalid")
     if not text:
         return
 
-    # Get current user state (if exists)
+    # Current state (if exists)
     current = user_data.get(str(chat_id), {})
     state = current.get("state")
 
-    if text in ("/start", "start", "Start"):
+    if text.lower() in ("/start", "start"):
         send_message(chat_id, WELCOME_TEXT)
-        # Create user placeholder (so they exist in the file)
         if str(chat_id) not in user_data:
             user_data[str(chat_id)] = {"chat_id": chat_id, "state": "awaiting_setup"}
         return
@@ -149,15 +149,14 @@ def handle_message(chat_id: int, text: str, user_data: dict):
         awaiting = total - ready
         send_message(
             chat_id,
-            f"📊 <b>סטטוס בוט</b>\n\n"
+            "📊 <b>סטטוס בוט</b>\n\n"
             f"Total users: <b>{total}</b>\n"
             f"Ready: <b>{ready}</b>\n"
-            f"Awaiting setup: <b>{awaiting}</b>\n",
+            f"Awaiting setup: <b>{awaiting}</b>\n"
         )
         return
 
-    # 2) If user is already ready - ignore random texts to avoid repeated spam
-    # (only /start and /stat should produce output after setup)
+    # If user is already ready - ignore random texts to avoid spam from old updates
     if state == "ready":
         return
 
@@ -165,14 +164,13 @@ def handle_message(chat_id: int, text: str, user_data: dict):
     if not parsed:
         send_message(
             chat_id,
-            "❌ פורמט לא תקין.\n\n"
+            "❌ <b>פורמט לא תקין.</b>\n\n"
             "שלח /start כדי לראות שוב את ההוראות.\n"
             "דוגמה: <code>1 A 43 128 299</code>\n"
-            "דוגמה ל-C: <code>2 C 40/L 0 800</code>",
+            "דוגמה ל-C: <code>2 C 40/L 0 800</code>"
         )
         return
 
-    # Save preferences
     user_data[str(chat_id)] = {
         "chat_id": chat_id,
         "state": "ready",
@@ -184,7 +182,6 @@ def handle_message(chat_id: int, text: str, user_data: dict):
         "price_max": parsed["price_max"],
     }
 
-    # Confirmation message
     gender_label = {"men": "גברים", "women": "נשים", "kids": "ילדים"}[parsed["gender"]]
     category_label = {"shoes": "הנעלה", "clothing": "ביגוד", "both": "גם וגם"}[parsed["category"]]
 
@@ -201,7 +198,7 @@ def handle_message(chat_id: int, text: str, user_data: dict):
         f"סוג מוצר: <b>{category_label}</b>\n"
         f"מידה: <b>{' | '.join(size_part)}</b>\n"
         f"טווח מחירים: <b>{parsed['price_min']} - {parsed['price_max']} ₪</b>\n\n"
-        "🕖 מוצרים נשלחים פעמיים ביום (שעון ישראל): <b>07:00</b> ו-<b>19:00</b>\n",
+        "🕖 מוצרים נשלחים פעמיים ביום (שעון ישראל): <b>07:00</b> ו-<b>19:00</b>\n"
     )
 
 
@@ -218,7 +215,7 @@ def main():
     if not isinstance(last_update, int):
         last_update = 0
 
-    # IMPORTANT: always use offset = last_update + 1 (even if last_update == 0)
+    # Always use offset = last_update + 1 (even when last_update is 0)
     params = {"offset": last_update + 1, "allowed_updates": ["message"]}
 
     log(f"Calling getUpdates with params: {params}")
