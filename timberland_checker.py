@@ -1,12 +1,17 @@
-# timberland_checker.py
 import json
 import os
 import time
 import requests
-from datetime import datetime, timezone, timedelta
+from datetime import datetime
 
 from bs4 import BeautifulSoup
 from playwright.sync_api import sync_playwright
+
+try:
+    from zoneinfo import ZoneInfo
+    IL_TZ = ZoneInfo("Asia/Jerusalem")
+except Exception:
+    IL_TZ = None
 
 USER_DATA_FILE = "user_data.json"
 STATE_FILE = "state.json"
@@ -18,7 +23,7 @@ API = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
 
 ENABLE_DEBUG_LOGS = True
 
-IL_TZ = timezone(timedelta(hours=2))  # מספיק טוב לבוט הזה
+# Send windows by Israel local time
 SEND_HOURS_IL = {7, 19}
 
 def log(msg: str):
@@ -43,11 +48,7 @@ def save_json(path: str, data):
 
 def send_message(chat_id: int, text: str):
     url = f"{API}/sendMessage"
-    payload = {
-        "chat_id": chat_id,
-        "text": text,
-        "disable_web_page_preview": True,
-    }
+    payload = {"chat_id": chat_id, "text": text, "disable_web_page_preview": True}
     r = requests.post(url, data=payload, timeout=30)
     log(f"send_message -> {r.status_code}")
     return r
@@ -57,16 +58,35 @@ def send_photo(chat_id: int, photo_url: str, caption: str):
     payload = {
         "chat_id": chat_id,
         "photo": photo_url,
-        "caption": caption[:950],
+        "caption": (caption or "")[:950],
         "disable_web_page_preview": True,
     }
     r = requests.post(url, data=payload, timeout=30)
     log(f"send_photo -> {r.status_code}")
     return r
 
+def now_il():
+    if IL_TZ:
+        return datetime.now(IL_TZ)
+    return datetime.now()
+
+def current_send_key():
+    """
+    Represents a "window" per day + hour (07 or 19) in Israel time.
+    Example: 2025-12-17-19
+    """
+    t = now_il()
+    if t.hour in SEND_HOURS_IL:
+        return f"{t.strftime('%Y-%m-%d')}-{t.hour:02d}"
+    return None
+
 def in_send_window():
-    now_il = datetime.now(IL_TZ)
-    return now_il.hour in SEND_HOURS_IL, now_il
+    """
+    Allow send if hour is 07 or 19 (Israel time).
+    No minute restriction - we rely on last_sent_key to avoid duplicates.
+    """
+    t = now_il()
+    return (t.hour in SEND_HOURS_IL), t
 
 def is_manual_run():
     return (os.getenv("GITHUB_EVENT_NAME") or "").strip() == "workflow_dispatch"
@@ -103,7 +123,7 @@ def build_clothing_url(gender: str, clothing_size: str, price_min: int, price_ma
 
     return f"{base}?price={price_min}_{price_max}&size={size_code}&product_list_order=low_to_high"
 
-def scrape_products(page_html: str, fallback_url: str):
+def scrape_products(page_html: str, base_url: str):
     soup = BeautifulSoup(page_html, "html.parser")
     items = []
 
@@ -116,12 +136,12 @@ def scrape_products(page_html: str, fallback_url: str):
         title = title_el.get_text(strip=True)
 
         href = title_el.get("href") or ""
-        if href.startswith("/"):
+        if href and href.startswith("/"):
             link = "https://www.timberland.co.il" + href
         elif href.startswith("http"):
             link = href
         else:
-            link = fallback_url
+            link = base_url
 
         img_el = p.select_one("img")
         img = ""
@@ -133,17 +153,9 @@ def scrape_products(page_html: str, fallback_url: str):
         price_el = p.select_one(".price") or p.select_one(".special-price") or p.select_one("[data-price-amount]")
         price_text = price_el.get_text(" ", strip=True) if price_el else ""
 
-        uid = link  # יציב מספיק לבוט
+        uid = link
+        items.append({"id": uid, "title": title, "price": price_text, "link": link, "img": img})
 
-        items.append({
-            "id": uid,
-            "title": title,
-            "price": price_text,
-            "link": link,
-            "img": img,
-        })
-
-    # de-dup
     seen = set()
     out = []
     for it in items:
@@ -162,25 +174,21 @@ def fetch_url_html(playwright, url: str):
     browser.close()
     return html
 
-def try_get_coupons_text():
-    # אופציונלי בלבד - לא שובר אם אין
-    try:
-        import coupon_fetcher  # type: ignore
-        if hasattr(coupon_fetcher, "get_coupons_text"):
-            txt = coupon_fetcher.get_coupons_text()
-            if isinstance(txt, str) and txt.strip():
-                return txt.strip()
-    except Exception:
-        pass
-    return ""
-
-def check_and_send_for_user(pw, user_id: str, u: dict, global_state: dict, shoes_size_map: dict, apparel_size_map: dict):
+def check_and_send_for_user(pw, user_id: str, u: dict, global_state: dict, shoes_size_map: dict, apparel_size_map: dict, send_key: str, manual: bool):
     chat_id = u.get("chat_id")
     if not isinstance(chat_id, int):
         return
 
     if u.get("state") != "ready":
         return
+
+    st = global_state.get(user_id, {})
+
+    # prevent duplicates in the same window for scheduled runs
+    if not manual and send_key:
+        if st.get("last_sent_key") == send_key:
+            log(f"User {user_id}: already sent in window {send_key}, skipping.")
+            return
 
     gender = u.get("gender")
     category = u.get("category")
@@ -190,7 +198,7 @@ def check_and_send_for_user(pw, user_id: str, u: dict, global_state: dict, shoes
     urls = []
 
     if category in ("shoes", "both"):
-        shoe_size = u.get("shoes_size")
+        shoe_size = u.get("shoes_size") or u.get("size")
         if shoe_size:
             url = build_shoes_url(gender, str(shoe_size), price_min, price_max, shoes_size_map)
             if url:
@@ -204,12 +212,10 @@ def check_and_send_for_user(pw, user_id: str, u: dict, global_state: dict, shoes
                 urls.append(("clothing", url))
 
     if not urls:
-        # הודעה אחת בלבד, לא ספאם
-        send_message(chat_id, "❌ אין אפשרות לבנות URL מההגדרות שלך. נסה /reset ואז הגדרה מחדש.")
+        send_message(chat_id, "❌ אין אפשרות לבנות URL מההגדרות שלך. נסה /reset והגדרה מחדש.")
         return
 
-    user_state = global_state.get(user_id, {})
-    sent_ids = set(user_state.get("sent_ids", []))
+    sent_ids = set(st.get("sent_ids", []))
 
     total_found = 0
     total_new = 0
@@ -234,13 +240,18 @@ def check_and_send_for_user(pw, user_id: str, u: dict, global_state: dict, shoes
             total_new += 1
             time.sleep(0.4)
 
-    global_state[user_id] = {"sent_ids": list(sent_ids)}
+    new_state = global_state.get(user_id, {})
+    new_state["sent_ids"] = list(sent_ids)
 
-    # קופונים - נשלח רק אם באמת נשלחו מוצרים חדשים (כדי לא להציף)
-    if total_new > 0:
-        coupons = try_get_coupons_text()
-        if coupons:
-            send_message(chat_id, coupons)
+    if not manual and send_key:
+        new_state["last_sent_key"] = send_key
+
+    global_state[user_id] = new_state
+
+    if total_found == 0:
+        send_message(chat_id, "לא נמצאו פריטים לפי ההגדרות שלך כרגע.")
+    else:
+        send_message(chat_id, f"סיכום: נמצאו {total_found} פריטים. נשלחו {total_new} חדשים.")
 
 def main():
     if not TELEGRAM_BOT_TOKEN:
@@ -248,17 +259,18 @@ def main():
 
     log("Starting checker...")
 
-    allowed, now_il = in_send_window()
+    allowed, t = in_send_window()
     manual = is_manual_run()
 
     if not allowed and not manual:
-        log(f"Not in send window, IL time is {now_il.strftime('%H:%M')}, skipping checker scan.")
+        log(f"Not in send window, IL time is {t.strftime('%H:%M')}, skipping checker scan.")
         return
 
+    send_key = current_send_key()
     if manual:
         log("Checker allowed: manual run")
     else:
-        log(f"Checker allowed: send window {now_il.strftime('%H:%M')}")
+        log(f"Checker allowed: send window {t.strftime('%H:%M')} (key={send_key})")
 
     user_data = load_json(USER_DATA_FILE, {})
     log(f"user_data loaded keys: {list(user_data.keys())}")
@@ -273,7 +285,7 @@ def main():
 
     with sync_playwright() as pw:
         for user_id, u in user_data.items():
-            check_and_send_for_user(pw, user_id, u, global_state, shoes_size_map, apparel_size_map)
+            check_and_send_for_user(pw, user_id, u, global_state, shoes_size_map, apparel_size_map, send_key, manual)
 
     save_json(STATE_FILE, global_state)
     log("Checker done.")
