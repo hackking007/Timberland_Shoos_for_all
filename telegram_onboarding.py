@@ -52,18 +52,6 @@ def send_message(chat_id: int, text: str):
 
 
 def parse_one_line(text: str):
-    """
-    Expected:
-    <gender> <type> <size> <min_price> <max_price>
-
-    gender: 1/2/3
-    type: A/B/C
-
-    size:
-    - A: numeric (shoe size)
-    - B: XS/S/M/L/XL/XXL/XXXL
-    - C: shoeSize/clothingSize e.g. 40/L
-    """
     parts = (text or "").strip().split()
     if len(parts) != 5:
         return None
@@ -127,17 +115,24 @@ def parse_one_line(text: str):
 
 def handle_message(chat_id: int, text: str, user_data: dict):
     text = (text or "").strip()
-    log(f"handle_message: chat_id={chat_id}, text='{text}'")
-
-    # Ignore empty messages (prevents spam "format invalid")
     if not text:
         return
 
-    # Current state (if exists)
     current = user_data.get(str(chat_id), {})
     state = current.get("state")
 
     if text.lower() in ("/start", "start"):
+        # Anti-spam: if user already ready, do NOT resend full welcome each automation run
+        if state == "ready":
+            send_message(
+                chat_id,
+                "✅ אתה כבר מוגדר ומקבל מוצרים ב-07:00 וב-19:00 (שעון ישראל).\n"
+                "כדי לשנות הגדרות - שלח פורמט חדש כמו:\n"
+                "<code>1 A 43 128 299</code>\n"
+                "או שלח /reset (אם קיים אצלך) ואז /start."
+            )
+            return
+
         send_message(chat_id, WELCOME_TEXT)
         if str(chat_id) not in user_data:
             user_data[str(chat_id)] = {"chat_id": chat_id, "state": "awaiting_setup"}
@@ -156,12 +151,12 @@ def handle_message(chat_id: int, text: str, user_data: dict):
         )
         return
 
-    # If user is already ready - ignore random texts to avoid spam from old updates
-    if state == "ready":
-        return
-
     parsed = parse_one_line(text)
     if not parsed:
+        # If user is ready, ignore bad texts (prevents spam from old updates)
+        if state == "ready":
+            return
+
         send_message(
             chat_id,
             "❌ <b>פורמט לא תקין.</b>\n\n"
@@ -215,7 +210,6 @@ def main():
     if not isinstance(last_update, int):
         last_update = 0
 
-    # Always use offset = last_update + 1 (even when last_update is 0)
     params = {"offset": last_update + 1, "allowed_updates": ["message"]}
 
     log(f"Calling getUpdates with params: {params}")
