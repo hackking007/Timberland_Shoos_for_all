@@ -2,59 +2,55 @@
 import os
 
 # ---------------- Telegram ----------------
-
-# Support both env names, prefer TELEGRAM_BOT_TOKEN
+# Support both TELEGRAM_BOT_TOKEN and TELEGRAM_TOKEN (backward compatible)
 TELEGRAM_BOT_TOKEN = (os.getenv("TELEGRAM_BOT_TOKEN", "") or os.getenv("TELEGRAM_TOKEN", "")).strip()
 
+# Optional admin chat id (for debug notifications)
 _admin_env = (os.getenv("ADMIN_CHAT_ID", "") or os.getenv("CHAT_ID", "")).strip()
 ADMIN_CHAT_ID = int(_admin_env) if _admin_env.isdigit() else None
 
-# ---------------- Files ----------------
+# ---------------- Playwright / Scan ----------------
+SCAN_TIMEOUT = 60000           # ms
+MAX_LOAD_MORE_CLICKS = 10
+LOAD_MORE_DELAY = 1500         # ms
 
+# ---------------- Files ----------------
 USER_DATA_FILE = "user_data.json"
 LAST_UPDATE_ID_FILE = "last_update_id.json"
+STATE_FILE = "state.json"          # IMPORTANT: matches bot.yml artifact paths
+SIZE_MAP_FILE = "size_map.json"
 
-# State file for products "already sent"
-STATE_FILE = "state.json"
-
-# ---------------- Playwright / Scraping ----------------
-
-SCAN_TIMEOUT = 60000  # ms
-MAX_LOAD_MORE_CLICKS = 10
-LOAD_MORE_DELAY = 1500  # ms
-
-# ---------------- Sending window (Israel time) ----------------
-SEND_HOURS_IL = [7, 19]
-
-# ---------------- Categories / URLs ----------------
-
-SHOES_BASE = {
+# ---------------- URLs ----------------
+# Shoes pages
+SHOES_URLS = {
     "men": "https://www.timberland.co.il/men/footwear",
     "women": "https://www.timberland.co.il/women/%D7%94%D7%A0%D7%A2%D7%9C%D7%94",
     "kids": "https://www.timberland.co.il/kids/toddlers-0-5y",
 }
 
-CLOTHING_BASE = {
+# Clothing pages (you confirmed men works like: /men/clothing?price=68_1001&size=4)
+CLOTHING_URLS = {
     "men": "https://www.timberland.co.il/men/clothing",
     "women": "https://www.timberland.co.il/women/clothing",
     "kids": "https://www.timberland.co.il/kids/clothing",
 }
 
-SHOES_SIZE_MAP = {
-    "men": {"40": "791", "41": "792", "42": "793", "43": "794", "44": "795", "45": "796"},
-    "women": {"36": "798", "37": "799", "38": "800", "39": "801", "40": "802", "41": "803"},
-    "kids": {"28": "230", "29": "231", "30": "232", "31": "233", "32": "234", "33": "235", "34": "236", "35": "237"},
+# Clothing size mapping (example: L -> 4, as you verified)
+CLOTHING_SIZE_MAP = {
+    "XS": 1,
+    "S": 2,
+    "M": 3,
+    "L": 4,
+    "XL": 5,
+    "XXL": 6,
+    "XXXL": 7,
 }
 
-# Clothing size mapping - based on your example: men clothing size L -> size=4
-CLOTHING_SIZE_MAP = {
-    "men":   {"XS": "1", "S": "2", "M": "3", "L": "4", "XL": "5", "XXL": "6", "XXXL": "7"},
-    "women": {"XS": "1", "S": "2", "M": "3", "L": "4", "XL": "5", "XXL": "6", "XXXL": "7"},
-    "kids":  {"2": "2", "3": "3", "4": "4", "5": "5", "6": "6", "7": "7", "8": "8", "10": "10", "12": "12"},
-}
+# ---------------- Scheduling ----------------
+# Products are sent twice a day (Israel time)
+SEND_HOURS_IL = [7, 19]
 
 # ---------------- Messages ----------------
-
 WELCOME_TEXT = (
     "👟 <b>ברוך הבא לבוט טימברלנד</b>\n\n"
     "כדי להגדיר מעקב מותאם אישית בהודעה אחת, שלחו לבוט הודעה בפורמט הבא:\n\n"
@@ -74,8 +70,10 @@ WELCOME_TEXT = (
     "כדי שלא נשבור מידות שונות, שלח מידה בפורמט <code>shoeSize/clothingSize</code>\n"
     "לדוגמה:\n"
     "<code>2 C 40/L 0 800</code>\n\n"
-    "🕖 <b>שעות שליחת מוצרים</b> (שעון ישראל):\n"
+    "🕖 <b>שעות שליחת מוצרים (שעון ישראל):</b>\n"
     "07:00 ו-19:00\n"
 )
 
+# ---------------- Logs ----------------
 ENABLE_DEBUG_LOGS = True
+ENABLE_ADMIN_NOTIFICATIONS = bool(ADMIN_CHAT_ID)
