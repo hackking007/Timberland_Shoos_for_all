@@ -5,6 +5,10 @@ on:
     - cron: "*/30 * * * *"
   workflow_dispatch:
 
+concurrency:
+  group: timberland-bot
+  cancel-in-progress: true
+
 jobs:
   run-bot:
     runs-on: ubuntu-latest
@@ -13,12 +17,15 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Download previous state (if exists)
-        uses: actions/download-artifact@v4
+      # Download the latest artifact from the latest successful run of THIS workflow
+      - name: Download previous state (latest artifact)
+        uses: dawidd6/action-download-artifact@v3
         with:
+          workflow: bot.yml
+          workflow_conclusion: success
           name: timberland-state
           path: .
-        continue-on-error: true
+          if_no_artifact_found: warn
 
       - name: Init state files if missing
         run: |
