@@ -1,5 +1,6 @@
 import json
 import re
+import time
 import requests
 
 from config import (
@@ -11,6 +12,9 @@ from config import (
 )
 
 API = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
+
+# כמה זמן אחורה נחשב "backlog" ולא נענה עליו בכלל (בשניות)
+BACKLOG_IGNORE_SECONDS = 600  # 10 דקות
 
 
 def log(msg: str):
@@ -47,6 +51,18 @@ def send_message(chat_id: int, text: str):
 
 
 def parse_one_line(text: str):
+    """
+    Expected:
+    <gender> <type> <size> <min_price> <max_price>
+
+    gender: 1/2/3
+    type: A/B/C
+
+    size:
+    - A: numeric shoe size (2 digits)
+    - B: XS/S/M/L/XL/XXL/XXXL
+    - C: shoeSize/clothingSize e.g. 40/L
+    """
     parts = text.strip().split()
     if len(parts) != 5:
         return None
@@ -110,15 +126,23 @@ def ensure_user(user_data: dict, chat_id: int):
     k = str(chat_id)
     if k not in user_data:
         user_data[k] = {"chat_id": chat_id, "state": "awaiting_setup", "welcome_sent": False}
-    # backward compat
     if "welcome_sent" not in user_data[k]:
         user_data[k]["welcome_sent"] = False
 
 
+def fetch_updates(offset: int | None):
+    params = {}
+    if offset is not None:
+        params["offset"] = offset
+    r = requests.get(f"{API}/getUpdates", params=params, timeout=30)
+    data = r.json()
+    if not data.get("ok"):
+        raise SystemExit(f"Telegram getUpdates failed: {data}")
+    return data.get("result", [])
+
+
 def handle_message(chat_id: int, text: str, user_data: dict):
     text = (text or "").strip()
-    log(f"handle_message: chat_id={chat_id}, text='{text}'")
-
     if not text:
         return
 
@@ -126,28 +150,14 @@ def handle_message(chat_id: int, text: str, user_data: dict):
 
     t = text.lower()
 
-    # Admin-like drain command (works for any user, but you can restrict if you want)
-    if t == "/sync":
-        send_message(chat_id, "✅ Sync requested. I will clear backlog on next run.")
-        user_data[str(chat_id)]["sync_requested"] = True
-        return
-
+    # /start - שולחים הוראות פעם אחת בלבד, ואחר כך שקט (בלי ספאם)
     if t == "/start":
-        # שולחים welcome רק פעם אחת (או אם המשתמש ממש רוצה - אפשר להוסיף /help)
         if not user_data[str(chat_id)].get("welcome_sent", False):
             send_message(chat_id, WELCOME_TEXT)
             user_data[str(chat_id)]["welcome_sent"] = True
-        else:
-            send_message(
-                chat_id,
-                "ℹ️ ההוראות כבר נשלחו בעבר.\n"
-                "שלח הודעה בפורמט: 1 A 43 128 299\n"
-                "או /reset כדי להתחיל מחדש."
-            )
         return
 
     if t == "/reset":
-        # מאפס רק הגדרות (לא מוחק את היוזר) כדי לא לאבד welcome_sent
         u = user_data[str(chat_id)]
         u.update({
             "state": "awaiting_setup",
@@ -158,7 +168,7 @@ def handle_message(chat_id: int, text: str, user_data: dict):
             "price_min": None,
             "price_max": None,
         })
-        send_message(chat_id, "✅ בוצע איפוס. שלח /start ואז את ההודעה בפורמט הנכון.")
+        send_message(chat_id, "✅ בוצע איפוס. שלח /start ואז הודעה בפורמט הנכון.")
         return
 
     if t == "/stat":
@@ -176,14 +186,13 @@ def handle_message(chat_id: int, text: str, user_data: dict):
 
     parsed = parse_one_line(text)
     if not parsed:
-        # לא שולחים "פורמט לא תקין" למי שלא ביקש start אף פעם
+        # אם המשתמש לא ראה /start - לא נענה בכלל
         if user_data[str(chat_id)].get("welcome_sent", False):
             send_message(
                 chat_id,
                 "❌ פורמט לא תקין.\n\n"
                 "דוגמה: 1 A 43 128 299\n"
-                "דוגמה ל-C: 2 C 40/L 0 800\n"
-                "אפשר לשלוח /start כדי לראות שוב את ההוראות."
+                "דוגמה ל-C: 2 C 40/L 0 800"
             )
         return
 
@@ -219,20 +228,9 @@ def handle_message(chat_id: int, text: str, user_data: dict):
     )
 
 
-def fetch_updates(offset: int | None):
-    params = {}
-    if offset is not None:
-        params["offset"] = offset
-    r = requests.get(f"{API}/getUpdates", params=params, timeout=30)
-    data = r.json()
-    if not data.get("ok"):
-        raise SystemExit(f"Telegram getUpdates failed: {data}")
-    return data.get("result", [])
-
-
 def main():
     if not TELEGRAM_TOKEN:
-        raise SystemExit("TELEGRAM token is missing. Set TELEGRAM_BOT_TOKEN (or TELEGRAM_TOKEN) in GitHub Secrets.")
+        raise SystemExit("TELEGRAM_TOKEN is missing. Set it in GitHub Secrets.")
 
     log("=== telegram_onboarding.py starting ===")
 
@@ -243,28 +241,12 @@ def main():
         last_update = 0
 
     offset = last_update + 1 if last_update > 0 else None
-
-    # אם מישהו ביקש sync - ננקה backlog בלי לענות עליו
-    sync_requested = any(v.get("sync_requested") for v in user_data.values())
-    if sync_requested:
-        log("Sync requested - draining backlog without replying...")
-        updates = fetch_updates(offset=None)  # מביא הכל
-        max_id = last_update
-        for upd in updates:
-            uid = upd.get("update_id")
-            if isinstance(uid, int):
-                max_id = max(max_id, uid)
-        # מנקה את הדגל
-        for v in user_data.values():
-            v.pop("sync_requested", None)
-        save_json(LAST_UPDATE_ID_FILE, {"last_update_id": max_id})
-        save_json(USER_DATA_FILE, user_data)
-        log(f"Backlog drained. last_update_id set to {max_id}")
-        return
-
     updates = fetch_updates(offset=offset)
     log(f"getUpdates returned {len(updates)} updates")
 
+    # אם יש /sync בתוך ה-batch הזה - ננקה backlog מיידית בלי לעבד שום דבר נוסף
+    # (כדי לעצור את הספאם כבר באותה ריצה)
+    saw_sync = False
     max_update_id = last_update
 
     for upd in updates:
@@ -275,6 +257,43 @@ def main():
         msg = upd.get("message") or upd.get("edited_message")
         if not msg:
             continue
+
+        chat_id = (msg.get("chat") or {}).get("id")
+        text = (msg.get("text") or "").strip()
+
+        if not isinstance(chat_id, int):
+            continue
+
+        if text.lower() == "/sync":
+            saw_sync = True
+            ensure_user(user_data, chat_id)
+            user_data[str(chat_id)]["welcome_sent"] = user_data[str(chat_id)].get("welcome_sent", False)
+            # נענה פעם אחת בלבד
+            send_message(chat_id, "✅ Sync done. Backlog cleared.")
+            break
+
+    if saw_sync:
+        save_json(USER_DATA_FILE, user_data)
+        save_json(LAST_UPDATE_ID_FILE, {"last_update_id": max_update_id})
+        log(f"Backlog cleared via /sync. last_update_id set to {max_update_id}")
+        return
+
+    now = int(time.time())
+
+    for upd in updates:
+        uid = upd.get("update_id")
+        if isinstance(uid, int):
+            max_update_id = max(max_update_id, uid)
+
+        msg = upd.get("message") or upd.get("edited_message")
+        if not msg:
+            continue
+
+        msg_date = msg.get("date")
+        if isinstance(msg_date, int):
+            # לא עונים על backlog ישן (מפסיק ספאם)
+            if now - msg_date > BACKLOG_IGNORE_SECONDS:
+                continue
 
         chat_id = (msg.get("chat") or {}).get("id")
         text = msg.get("text", "")
