@@ -128,6 +128,14 @@ def handle_message(chat_id: int, text: str, user_data: dict):
     text = (text or "").strip()
     log(f"handle_message: chat_id={chat_id}, text='{text}'")
 
+    # 1) Ignore empty messages completely (prevents spam "format invalid")
+    if not text:
+        return
+
+    # Get current user state (if exists)
+    current = user_data.get(str(chat_id), {})
+    state = current.get("state")
+
     if text in ("/start", "start", "Start"):
         send_message(chat_id, WELCOME_TEXT)
         # Create user placeholder (so they exist in the file)
@@ -146,6 +154,11 @@ def handle_message(chat_id: int, text: str, user_data: dict):
             f"Ready: <b>{ready}</b>\n"
             f"Awaiting setup: <b>{awaiting}</b>\n",
         )
+        return
+
+    # 2) If user is already ready - ignore random texts to avoid repeated spam
+    # (only /start and /stat should produce output after setup)
+    if state == "ready":
         return
 
     parsed = parse_one_line(text)
@@ -205,9 +218,8 @@ def main():
     if not isinstance(last_update, int):
         last_update = 0
 
-    params = {}
-    if last_update > 0:
-        params["offset"] = last_update + 1
+    # IMPORTANT: always use offset = last_update + 1 (even if last_update == 0)
+    params = {"offset": last_update + 1, "allowed_updates": ["message"]}
 
     log(f"Calling getUpdates with params: {params}")
     r = requests.get(f"{API}/getUpdates", params=params, timeout=30)
