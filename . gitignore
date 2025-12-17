@@ -1,13 +1,3 @@
-# State / runtime files (do not commit)
 user_data.json
 last_update_id.json
-state.json
 shoes_state.json
-
-# Python caches
-__pycache__/
-*.pyc
-*.pyo
-
-# Local env
-.env
