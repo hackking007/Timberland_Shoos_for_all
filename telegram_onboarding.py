@@ -273,7 +273,12 @@ def main():
     log(f"getUpdates returned {len(updates)} updates")
 
     if not updates:
+        log("No new updates to process")
         return
+    
+    # Debug: show update IDs being processed
+    update_ids = [upd.get("update_id") for upd in updates]
+    log(f"Processing update IDs: {update_ids}")
 
     # Process all messages (not just newest per chat)
     max_update_id = last_update
@@ -303,7 +308,17 @@ def main():
 
     save_json(USER_DATA_FILE, user_data)
     save_json(LAST_UPDATE_ID_FILE, {"last_update_id": max_update_id})
-    log(f"Onboarding done. last_update_id={max_update_id}, users={len(user_data)}")
+    log(f"Onboarding done. Processed {len(updates)} updates")
+    log(f"Updated last_update_id from {last_update} to {max_update_id}")
+    log(f"Total users: {len(user_data)}")
+    
+    # Force save to ensure state persists
+    try:
+        with open(LAST_UPDATE_ID_FILE, "w", encoding="utf-8") as f:
+            json.dump({"last_update_id": max_update_id}, f)
+        log(f"Force saved last_update_id: {max_update_id}")
+    except Exception as e:
+        log(f"Error force saving last_update_id: {e}")
 
 if __name__ == "__main__":
     main()
