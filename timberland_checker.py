@@ -8,6 +8,7 @@ from datetime import datetime, timezone, timedelta
 from bs4 import BeautifulSoup
 from playwright.sync_api import sync_playwright
 from coupon_fetcher import get_coupons
+from smart_alerts import process_smart_alerts, get_price_history_summary, generate_share_link
 
 USER_DATA_FILE = "user_data.json"
 STATE_FILE = "shoes_state.json"
@@ -75,7 +76,7 @@ def is_manual_run():
 def build_shoes_url(gender: str, shoe_size: str, price_min: int, price_max: int, shoes_size_map: dict):
     base = {
         "men": "https://www.timberland.co.il/men/footwear",
-        "women": "https://www.timberland.co.il/women/%D7%94%D7%A0%D7%A2%D7%9C%D7%94",
+        "women": "https://www.timberland.co.il/women/shoes",
         "kids": "https://www.timberland.co.il/kids/toddlers-0-5y",
     }.get(gender)
 
@@ -206,25 +207,42 @@ def check_and_send_for_user(pw, user_id: str, u: dict, global_state: dict, shoes
     total_found = 0
     total_new = 0
 
+    all_items = []  # Collect all items for smart alerts
+    
     for kind, url in urls:
         log(f"User {user_id} scan {kind} URL: {url}")
         html = fetch_url_html(pw, url)
         items = scrape_products(html, url)
         total_found += len(items)
+        all_items.extend(items)  # Add to smart alerts processing
 
         for it in items:
             if it["id"] in sent_ids:
                 continue
 
-            caption = f"{it['title']}\n{it['price']}\n{it['link']}"
+            # Enhanced caption with price history
+            price_history = get_price_history_summary(it["id"])
+            share_link = generate_share_link(it["id"], it["title"], it["price"], it["link"])
+            
+            caption = f"{it['title']}\n{it['price']}\n{it['link']}\n\n"
+            caption += f"{price_history}\n\n"
+            caption += f"📤 Share: /share_{it['id'].split('/')[-1][:10]}"
+            
             if it["img"]:
-                send_photo(chat_id, it["img"], caption)
+                send_photo(chat_id, it["img"], caption[:950])  # Telegram limit
             else:
-                send_message(chat_id, caption)
+                send_message(chat_id, caption[:950])
 
             sent_ids.add(it["id"])
             total_new += 1
             time.sleep(0.5)
+    
+    # Process smart alerts for this user
+    if all_items:
+        user_data_single = {user_id: u}
+        alert_results = process_smart_alerts(all_items, user_data_single)
+        if alert_results["price_alerts"]:
+            log(f"Smart alerts sent for user {user_id}: {len(alert_results['price_alerts'])}")
 
     global_state[user_id] = {"sent_ids": list(sent_ids)}
 
@@ -252,7 +270,7 @@ def main():
     if not TELEGRAM_BOT_TOKEN:
         raise SystemExit("Missing TELEGRAM_BOT_TOKEN in GitHub Secrets.")
 
-    log("Starting checker...")
+    log("Starting checker with smart alerts...")
 
     allowed, now_il = in_send_window()
     manual = is_manual_run()
@@ -283,7 +301,7 @@ def main():
             check_and_send_for_user(pw, user_id, u, global_state, shoes_size_map, apparel_size_map)
 
     save_json(STATE_FILE, global_state)
-    log("Checker done.")
+    log("Checker with smart alerts done.")
 
 if __name__ == "__main__":
     main()
