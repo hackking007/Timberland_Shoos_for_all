@@ -80,3 +80,4 @@ jobs:
             user_data.json
             last_update_id.json
             shoes_state.json
+            coupons_cache.json
