@@ -53,6 +53,12 @@ jobs:
         run: |
           python telegram_onboarding.py
 
+      - name: Auto-manage users
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+        run: |
+          python auto_user_manager.py
+
       - name: Debug - list state files (after onboarding)
         run: |
           echo "--- user_data.json after onboarding ---"
