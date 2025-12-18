@@ -277,13 +277,23 @@ def main():
             current_updates = get_updates(0)
             if current_updates:
                 max_current = max(upd.get("update_id", 0) for upd in current_updates)
-                last_update = max_current
+                # Set baseline but allow processing of very recent messages (last 5 minutes)
+                baseline_time = int(time.time()) - 300  # 5 minutes ago
+                recent_updates = [upd for upd in current_updates 
+                                if upd.get("message", {}).get("date", 0) > baseline_time]
+                
+                if recent_updates:
+                    log(f"Found {len(recent_updates)} recent messages to process")
+                    last_update = min(upd.get("update_id", 0) for upd in recent_updates) - 1
+                else:
+                    last_update = max_current
+                
                 save_json(LAST_UPDATE_ID_FILE, {"last_update_id": last_update})
                 log(f"Set baseline last_update_id to {last_update}")
-                return  # Skip processing on first run
             else:
                 last_update = 0
-        except:
+        except Exception as e:
+            log(f"Error setting baseline: {e}")
             last_update = 0
 
     # Get all updates
