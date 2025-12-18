@@ -7,7 +7,7 @@ from datetime import datetime, timezone, timedelta
 
 from bs4 import BeautifulSoup
 from playwright.sync_api import sync_playwright
-from coupon_fetcher import get_coupons
+from live_coupon_checker import get_formatted_coupons
 from smart_alerts import process_smart_alerts, get_price_history_summary, generate_share_link, extract_price
 
 USER_DATA_FILE = "user_data.json"
@@ -265,20 +265,12 @@ def check_and_send_for_user(pw, user_id: str, u: dict, global_state: dict, shoes
     # Debug: show what was saved
     log(f"User {user_id}: saved {len(sent_ids)} sent_ids to state")
 
-    # Send coupons after products
+    # Send live coupons after products
     try:
-        coupons = get_coupons(max_items=3)
-        if coupons:
-            coupon_text = "💰 DISCOUNT COUPONS:\n\n"
-            for coupon in coupons:
-                if coupon.get("code"):
-                    coupon_text += f"🎫 {coupon['code']}\n"
-                else:
-                    coupon_text += f"📝 {coupon.get('title', 'Check site for offers')}\n"
-            
-            send_message(chat_id, coupon_text)
+        coupon_message = get_formatted_coupons()
+        send_message(chat_id, coupon_message)
     except Exception as e:
-        log(f"Error fetching coupons: {e}")
+        log(f"Error fetching live coupons: {e}")
     
     if total_found == 0:
         send_message(chat_id, "No items found matching your criteria right now.")
