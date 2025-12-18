@@ -55,10 +55,14 @@ def update_price_history(product_id, current_price, title=""):
             "title": title,
             "prices": [],
             "lowest_price": current_price,
-            "highest_price": current_price
+            "highest_price": current_price,
+            "previous_lowest": current_price
         }
     
     product = history[product_id]
+    
+    # Store previous lowest for comparison
+    product["previous_lowest"] = product["lowest_price"]
     
     # Add current price
     product["prices"].append({"price": current_price, "timestamp": now})
