@@ -1,4 +1,4 @@
-# telegram_onboarding.py
+# telegram_onboarding.py - FIXED VERSION
 import json
 import os
 import re
@@ -13,13 +13,8 @@ API = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
 
 ENABLE_DEBUG_LOGS = True
 
-# אם יש backlog ישן, לא רוצים לענות עליו ולהציף
-# (רלוונטי במיוחד אם last_update_id התאפס בגלל artifact missing)
-AUTO_CLEAR_BACKLOG_IF_LAST_ID_ZERO = True
-
-# לא מעבדים הודעות ישנות מאוד (מונע "שיחזור" של ספאם)
-# Telegram message.date הוא epoch seconds
-MAX_MESSAGE_AGE_SECONDS = 15 * 60  # 15 minutes
+# FIXED: Increased message age limit to 24 hours
+MAX_MESSAGE_AGE_SECONDS = 24 * 60 * 60  # 24 hours instead of 15 minutes
 
 WELCOME_TEXT = (
     "👟 ברוך הבא לבוט טימברלנד\n\n"
@@ -76,18 +71,6 @@ def send_message(chat_id: int, text: str):
     return r
 
 def parse_one_line(text: str):
-    """
-    Expected:
-    <gender> <type> <size> <min_price> <max_price>
-
-    gender: 1/2/3
-    type: A/B/C
-
-    size:
-    - A: 2 digits shoe size, e.g. 43
-    - B: XS/S/M/L/XL/XXL/XXXL
-    - C: shoeSize/clothingSize e.g. 40/L
-    """
     parts = text.strip().split()
     if len(parts) != 5:
         return None
@@ -152,51 +135,43 @@ def handle_message(chat_id: int, text: str, user_data: dict):
     if text == "":
         return
 
+    log(f"Processing message from {chat_id}: {text}")
+
     user = user_data.get(str(chat_id), {"chat_id": chat_id, "state": "awaiting_setup", "welcome_sent": False})
     user_data[str(chat_id)] = user
 
-    # Commands (always)
+    # Commands
     if text == "/reset":
         user_data[str(chat_id)] = {"chat_id": chat_id, "state": "awaiting_setup", "welcome_sent": False}
-        send_message(chat_id, "✅ בוצע איפוס. שלח /start ואז את ההודעה בפורמט הנכון.")
+        send_message(chat_id, "鉁?讘讜爪注 讗讬驻讜住. 砖诇讞 /start 讜讗讝 讗转 讛讛讜讚注讛 讘驻讜专诪讟 讛谞讻讜谉.")
         return
 
     if text == "/stat":
         total = len(user_data)
         ready = sum(1 for v in user_data.values() if v.get("state") == "ready")
         awaiting = total - ready
-        send_message(chat_id, f"📊 סטטוס בוט\n\nTotal users: {total}\nReady: {ready}\nAwaiting setup: {awaiting}")
+        send_message(chat_id, f"馃搳 住讟讟讜住 讘讜讟\n\nTotal users: {total}\nReady: {ready}\nAwaiting setup: {awaiting}")
         return
 
     if text == "/start":
-        # רק אם לא נשלח בעבר, כדי לא להציף
-        if not user.get("welcome_sent"):
-            send_message(chat_id, WELCOME_TEXT)
-            user["welcome_sent"] = True
-        else:
-            send_message(
-                chat_id,
-                "ℹ️ ההוראות כבר נשלחו בעבר.\n"
-                "שלח הודעה בפורמט: 1 A 43 128 299\n"
-                "או /reset כדי להתחיל מחדש."
-            )
+        send_message(chat_id, WELCOME_TEXT)
+        user["welcome_sent"] = True
         return
 
-    # אם המשתמש כבר READY - לא מציפים אותו ב"פורמט לא תקין" על הודעות ישנות/אקראיות
-    # רק אם הוא שולח פורמט תקין - נעדכן. אחרת - נתעלם בשקט.
+    # Parse setup message
     parsed = parse_one_line(text)
     if not parsed:
         if user.get("state") != "ready":
             send_message(
                 chat_id,
-                "❌ פורמט לא תקין.\n\n"
-                "דוגמה: 1 A 43 128 299\n"
-                "דוגמה ל-C: 2 C 40/L 0 800\n"
-                "אפשר לשלוח /start כדי לראות שוב את ההוראות."
+                "鉂?驻讜专诪讟 诇讗 转拽讬谉.\n\n"
+                "讚讜讙诪讛: 1 A 43 128 299\n"
+                "讚讜讙诪讛 诇-C: 2 C 40/L 0 800\n"
+                "讗驻砖专 诇砖诇讜讞 /start 讻讚讬 诇专讗讜转 砖讜讘 讗转 讛讛讜专讗讜转."
             )
         return
 
-    # Save preferences
+    # Save user preferences
     user_data[str(chat_id)] = {
         "chat_id": chat_id,
         "state": "ready",
@@ -209,23 +184,25 @@ def handle_message(chat_id: int, text: str, user_data: dict):
         "price_max": parsed["price_max"],
     }
 
-    gender_label = {"men": "גברים", "women": "נשים", "kids": "ילדים"}[parsed["gender"]]
-    category_label = {"shoes": "הנעלה", "clothing": "ביגוד", "both": "גם וגם"}[parsed["category"]]
+    log(f"User {chat_id} registered: {parsed}")
+
+    gender_label = {"men": "讙讘专讬诐", "women": "谞砖讬诐", "kids": "讬诇讚讬诐"}[parsed["gender"]]
+    category_label = {"shoes": "讛谞注诇讛", "clothing": "讘讬讙讜讚", "both": "讙诐 讜讙诐"}[parsed["category"]]
 
     lines = [
-        "✅ הגדרות נשמרו בהצלחה!",
+        "鉁?讛讙讚专讜转 谞砖诪专讜 讘讛爪诇讞讛!",
         "",
-        f"מגדר: {gender_label}",
-        f"סוג מוצר: {category_label}",
+        f"诪讙讚专: {gender_label}",
+        f"住讜讙 诪讜爪专: {category_label}",
     ]
     if parsed["category"] in ("shoes", "both"):
-        lines.append(f"מידה נעליים: {parsed['shoes_size']}")
+        lines.append(f"诪讬讚讛 谞注诇讬讬诐: {parsed['shoes_size']}")
     if parsed["category"] in ("clothing", "both"):
-        lines.append(f"מידה ביגוד: {parsed['clothing_size']}")
+        lines.append(f"诪讬讚讛 讘讬讙讜讚: {parsed['clothing_size']}")
     lines += [
-        f"טווח מחירים: {parsed['price_min']} - {parsed['price_max']} ₪",
+        f"讟讜讜讞 诪讞讬专讬诐: {parsed['price_min']} - {parsed['price_max']} 鈧?,
         "",
-        "🕖 מוצרים נשלחים פעמיים ביום (שעון ישראל): 07:00 ו-19:00",
+        "馃晼 诪讜爪专讬诐 谞砖诇讞讬诐 驻注诪讬讬诐 讘讬讜诐 (砖注讜谉 讬砖专讗诇): 07:00 讜-19:00",
     ]
     send_message(chat_id, "\n".join(lines))
 
@@ -250,29 +227,14 @@ def main():
     if not isinstance(last_update, int):
         last_update = 0
 
-    # Auto-clear backlog if last_update_id is zero but we already have users stored
-    if AUTO_CLEAR_BACKLOG_IF_LAST_ID_ZERO and last_update == 0 and len(user_data) > 0:
-        log("last_update_id=0 but users exist -> clearing backlog silently (no messages).")
-        updates = get_updates(0)
-        max_update_id = 0
-        for upd in updates:
-            uid = upd.get("update_id")
-            if isinstance(uid, int):
-                max_update_id = max(max_update_id, uid)
-
-        save_json(LAST_UPDATE_ID_FILE, {"last_update_id": max_update_id})
-        log(f"Backlog cleared silently. last_update_id set to {max_update_id}")
-        return
-
-    # Normal run: only new updates
+    # Get all updates
     updates = get_updates(last_update + 1)
     log(f"getUpdates returned {len(updates)} updates")
 
     if not updates:
         return
 
-    # Keep only the newest message per chat_id (prevents multi-reply spam)
-    newest_by_chat = {}
+    # Process all messages (not just newest per chat)
     max_update_id = last_update
     now_ts = int(time.time())
 
@@ -292,23 +254,15 @@ def main():
         msg_date = msg.get("date")
         if isinstance(msg_date, int):
             if now_ts - msg_date > MAX_MESSAGE_AGE_SECONDS:
-                # ignore very old messages
+                log(f"Skipping old message from {chat_id}")
                 continue
 
-        # keep the latest by update_id
-        prev = newest_by_chat.get(chat_id)
-        if not prev or (isinstance(uid, int) and uid > prev.get("_uid", -1)):
-            newest_by_chat[chat_id] = {
-                "_uid": uid if isinstance(uid, int) else -1,
-                "text": msg.get("text", ""),
-            }
-
-    for chat_id, obj in newest_by_chat.items():
-        handle_message(chat_id, obj.get("text", ""), user_data)
+        text = msg.get("text", "")
+        handle_message(chat_id, text, user_data)
 
     save_json(USER_DATA_FILE, user_data)
     save_json(LAST_UPDATE_ID_FILE, {"last_update_id": max_update_id})
-    log(f"Onboarding done. last_update_id={max_update_id}")
+    log(f"Onboarding done. last_update_id={max_update_id}, users={len(user_data)}")
 
 if __name__ == "__main__":
     main()
