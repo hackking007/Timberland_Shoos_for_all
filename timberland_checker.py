@@ -220,11 +220,23 @@ def check_and_send_for_user(pw, user_id: str, u: dict, global_state: dict, shoes
             if it["id"] in sent_ids:
                 continue
 
-            # Enhanced caption with price history
-            price_history = get_price_history_summary(it["id"])
-            share_link = generate_share_link(it["id"], it["title"], it["price"], it["link"])
+            # Check if this is a price alert
+            current_price = extract_price(it.get("price", ""))
+            price_alert = ""
             
-            caption = f"{it['title']}\n{it['price']}\n{it['link']}\n\n"
+            if current_price and current_price <= price_max:
+                from smart_alerts import update_price_history
+                product_history = update_price_history(it["id"], current_price, it.get("title", ""))
+                
+                if current_price == product_history["lowest_price"]:
+                    price_alert = "🔥 LOWEST PRICE EVER!\n"
+                elif current_price < product_history.get("previous_lowest", 999999):
+                    price_alert = "🔥 PRICE DROP ALERT!\n"
+            
+            # Enhanced caption with price history and alerts
+            price_history = get_price_history_summary(it["id"])
+            
+            caption = f"{price_alert}{it['title']}\n{it['price']}\n{it['link']}\n\n"
             caption += f"{price_history}\n\n"
             caption += f"📤 Share: /share_{it['id'].split('/')[-1][:10]}"
             
@@ -237,12 +249,8 @@ def check_and_send_for_user(pw, user_id: str, u: dict, global_state: dict, shoes
             total_new += 1
             time.sleep(0.5)
     
-    # Process smart alerts for this user
-    if all_items:
-        user_data_single = {user_id: u}
-        alert_results = process_smart_alerts(all_items, user_data_single)
-        if alert_results["price_alerts"]:
-            log(f"Smart alerts sent for user {user_id}: {len(alert_results['price_alerts'])}")
+    # Smart alerts are now integrated into individual product messages
+    # No separate alert processing needed
 
     global_state[user_id] = {"sent_ids": list(sent_ids)}
 
@@ -253,9 +261,9 @@ def check_and_send_for_user(pw, user_id: str, u: dict, global_state: dict, shoes
             coupon_text = "💰 DISCOUNT COUPONS:\n\n"
             for coupon in coupons:
                 if coupon.get("code"):
-                    coupon_text += f"🎫 Code: {coupon['code']}\n"
-                coupon_text += f"📝 {coupon.get('title', 'Discount offer')}\n"
-                coupon_text += f"🔗 {coupon.get('url', '')}\n\n"
+                    coupon_text += f"🎫 {coupon['code']}\n"
+                else:
+                    coupon_text += f"📝 {coupon.get('title', 'Check site for offers')}\n"
             
             send_message(chat_id, coupon_text)
     except Exception as e:
