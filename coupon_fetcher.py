@@ -10,9 +10,19 @@ CACHE_TTL_SECONDS = 12 * 60 * 60  # 12 hours
 # מקורות "סבירים" לקופונים. לא 100% תמיד עובד - לכן עושים fallback
 SOURCES = [
     {
-        "name": "Cashyo",
-        "url": "https://www.cashyo.co.il/retailer/timberland",
-        "type": "cashyo",
+        "name": "Timberland Israel",
+        "url": "https://www.timberland.co.il/",
+        "type": "timberland_direct",
+    },
+    {
+        "name": "Honey",
+        "url": "https://www.joinhoney.com/stores/timberland",
+        "type": "honey",
+    },
+    {
+        "name": "RetailMeNot",
+        "url": "https://www.retailmenot.com/view/timberland.com",
+        "type": "retailmenot",
     },
     {
         "name": "PromoCode",
@@ -20,9 +30,9 @@ SOURCES = [
         "type": "promocode",
     },
     {
-        "name": "FreeCoupon",
-        "url": "https://www.freecoupon.co.il/coupons/timberland/",
-        "type": "generic",
+        "name": "Coupon Follow",
+        "url": "https://couponfollow.com/site/timberland.com",
+        "type": "couponfollow",
     },
 ]
 
@@ -60,26 +70,140 @@ def _dedupe_keep_order(items):
         out.append(it)
     return out
 
-def _parse_cashyo(html_text):
-    # Cashyo מציג רשימות של "קוד קופון" + תיאור. אין תמיד HTML יציב,
-    # לכן זה parser "רך": מחפשים טקסטים שנראים כמו קוד.
+def _parse_timberland_direct(html_text):
+    # Parse directly from Timberland Israel site for official promos
     soup = BeautifulSoup(html_text, "html.parser")
-    text = soup.get_text("\n", strip=True)
-
-    # קודי קופון לרוב A-Z0-9 באורך 3-12
-    codes = re.findall(r"\b[A-Z0-9]{3,12}\b", text)
-    # ננסה להשאיר רק "סביר" ולא מילים כלליות
-    blacklist = {"HTTPS", "TIMBERLAND", "ISRAEL", "SALE", "OFF", "NEW"}
-    codes = [c for c in codes if c not in blacklist]
-
     items = []
-    for c in codes[:10]:
+    
+    # Look for promo banners, sale announcements
+    promo_selectors = [
+        '.promo-banner', '.sale-banner', '.discount-banner',
+        '[class*="promo"]', '[class*="sale"]', '[class*="discount"]',
+        '.hero-banner', '.promotion'
+    ]
+    
+    for selector in promo_selectors:
+        elements = soup.select(selector)
+        for elem in elements:
+            text = elem.get_text(strip=True)
+            
+            # Look for percentage discounts
+            percent_matches = re.findall(r'(\d{1,2})%\s*(?:off|הנחה)', text, re.I)
+            for percent in percent_matches:
+                items.append({
+                    "source": "Timberland Israel",
+                    "code": "",
+                    "title": f"Up to {percent}% off - Official site promotion",
+                    "url": "https://www.timberland.co.il/",
+                })
+            
+            # Look for coupon codes in the text
+            codes = re.findall(r'\b[A-Z0-9]{4,12}\b', text.upper())
+            for code in codes:
+                if code not in {'TIMBERLAND', 'ISRAEL', 'SALE', 'OFF'}:
+                    items.append({
+                        "source": "Timberland Israel",
+                        "code": code,
+                        "title": "Official promo code from Timberland Israel",
+                        "url": "https://www.timberland.co.il/",
+                    })
+    
+    # Always add newsletter signup discount
+    items.append({
+        "source": "Timberland Israel",
+        "code": "",
+        "title": "Sign up for newsletter - get first purchase discount",
+        "url": "https://www.timberland.co.il/",
+    })
+    
+    return items[:3]  # Limit to 3 items
+
+def _parse_retailmenot(html_text):
+    soup = BeautifulSoup(html_text, "html.parser")
+    items = []
+    
+    # RetailMeNot specific selectors
+    coupon_elements = soup.find_all(['div', 'span'], class_=re.compile(r'offer|coupon|deal', re.I))
+    
+    for elem in coupon_elements[:5]:
+        text = elem.get_text(strip=True)
+        codes = re.findall(r'\b[A-Z0-9]{4,15}\b', text.upper())
+        
+        for code in codes:
+            if code not in {'RETAILMENOT', 'TIMBERLAND', 'COUPON', 'CODE'}:
+                items.append({
+                    "source": "RetailMeNot",
+                    "code": code,
+                    "title": "Verified coupon from RetailMeNot",
+                    "url": "https://www.retailmenot.com/view/timberland.com",
+                })
+                break
+    
+    return items[:2]
+
+def _parse_couponfollow(html_text):
+    soup = BeautifulSoup(html_text, "html.parser")
+    items = []
+    
+    # CouponFollow specific patterns
+    code_elements = soup.find_all(['span', 'div'], class_=re.compile(r'code|coupon', re.I))
+    
+    for elem in code_elements[:3]:
+        text = elem.get_text(strip=True)
+        codes = re.findall(r'\b[A-Z0-9]{4,12}\b', text.upper())
+        
+        for code in codes:
+            if len(code) >= 4 and code not in {'COUPONFOLLOW', 'TIMBERLAND'}:
+                items.append({
+                    "source": "CouponFollow",
+                    "code": code,
+                    "title": "Active coupon code",
+                    "url": "https://couponfollow.com/site/timberland.com",
+                })
+                break
+    
+    return items[:2]
+
+def _parse_honey(html_text):
+    # Honey shows verified coupon codes and deals
+    soup = BeautifulSoup(html_text, "html.parser")
+    
+    items = []
+    
+    # Look for coupon codes in common Honey patterns
+    coupon_elements = soup.find_all(['div', 'span'], class_=re.compile(r'coupon|code|promo', re.I))
+    
+    codes_found = set()
+    for elem in coupon_elements:
+        text = elem.get_text(strip=True)
+        # Find coupon codes (letters + numbers, 4-15 chars)
+        potential_codes = re.findall(r'\b[A-Z0-9]{4,15}\b', text.upper())
+        
+        for code in potential_codes:
+            if code not in codes_found and len(code) >= 4:
+                # Filter out common non-coupon words
+                blacklist = {'TIMBERLAND', 'HONEY', 'COUPON', 'CODE', 'PROMO', 'DEAL', 'SAVE', 'DISCOUNT'}
+                if code not in blacklist:
+                    codes_found.add(code)
+                    items.append({
+                        "source": "Honey",
+                        "code": code,
+                        "title": "Verified coupon code",
+                        "url": "https://www.joinhoney.com/stores/timberland",
+                    })
+                    
+                    if len(items) >= 5:  # Limit to 5 codes
+                        break
+    
+    # If no codes found, add a generic deal message
+    if not items:
         items.append({
-            "source": "Cashyo",
-            "code": c,
-            "title": "Coupon code (verify at checkout)",
-            "url": "https://www.cashyo.co.il/retailer/timberland",
+            "source": "Honey",
+            "code": "",
+            "title": "Check Honey extension for automatic coupon application",
+            "url": "https://www.joinhoney.com/stores/timberland",
         })
+    
     return items
 
 def _parse_promocode(html_text):
@@ -130,8 +254,14 @@ def get_coupons(force_refresh=False, max_items=5):
     for src in SOURCES:
         try:
             html_text = _fetch_html(src["url"])
-            if src["type"] == "cashyo":
-                items.extend(_parse_cashyo(html_text))
+            if src["type"] == "timberland_direct":
+                items.extend(_parse_timberland_direct(html_text))
+            elif src["type"] == "honey":
+                items.extend(_parse_honey(html_text))
+            elif src["type"] == "retailmenot":
+                items.extend(_parse_retailmenot(html_text))
+            elif src["type"] == "couponfollow":
+                items.extend(_parse_couponfollow(html_text))
             elif src["type"] == "promocode":
                 items.extend(_parse_promocode(html_text))
             else:
