@@ -203,8 +203,8 @@ def handle_message(chat_id: int, text: str, user_data: dict):
         "welcome_sent": True,
         "gender": parsed["gender"],
         "category": parsed["category"],
-        "shoes_size": parsed["shoes_size"],
-        "clothing_size": parsed["clothing_size"],
+        "shoes_size": parsed.get("shoes_size"),
+        "clothing_size": parsed.get("clothing_size"),
         "price_min": parsed["price_min"],
         "price_max": parsed["price_max"],
     }
