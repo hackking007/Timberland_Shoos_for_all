@@ -1,20 +1,15 @@
+# timberland_checker.py
 import json
 import os
 import time
 import requests
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 
 from bs4 import BeautifulSoup
 from playwright.sync_api import sync_playwright
 
-try:
-    from zoneinfo import ZoneInfo
-    IL_TZ = ZoneInfo("Asia/Jerusalem")
-except Exception:
-    IL_TZ = None
-
 USER_DATA_FILE = "user_data.json"
-STATE_FILE = "state.json"
+STATE_FILE = "shoes_state.json"
 SHOES_SIZE_MAP_FILE = "size_map.json"
 APPAREL_SIZE_MAP_FILE = "apparel_size_map.json"
 
@@ -23,7 +18,7 @@ API = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
 
 ENABLE_DEBUG_LOGS = True
 
-# Send windows by Israel local time
+IL_TZ = timezone(timedelta(hours=2))  # Israel (no DST handling here)
 SEND_HOURS_IL = {7, 19}
 
 def log(msg: str):
@@ -48,7 +43,11 @@ def save_json(path: str, data):
 
 def send_message(chat_id: int, text: str):
     url = f"{API}/sendMessage"
-    payload = {"chat_id": chat_id, "text": text, "disable_web_page_preview": True}
+    payload = {
+        "chat_id": chat_id,
+        "text": text,
+        "disable_web_page_preview": True,
+    }
     r = requests.post(url, data=payload, timeout=30)
     log(f"send_message -> {r.status_code}")
     return r
@@ -58,35 +57,16 @@ def send_photo(chat_id: int, photo_url: str, caption: str):
     payload = {
         "chat_id": chat_id,
         "photo": photo_url,
-        "caption": (caption or "")[:950],
+        "caption": caption[:950],
         "disable_web_page_preview": True,
     }
     r = requests.post(url, data=payload, timeout=30)
     log(f"send_photo -> {r.status_code}")
     return r
 
-def now_il():
-    if IL_TZ:
-        return datetime.now(IL_TZ)
-    return datetime.now()
-
-def current_send_key():
-    """
-    Represents a "window" per day + hour (07 or 19) in Israel time.
-    Example: 2025-12-17-19
-    """
-    t = now_il()
-    if t.hour in SEND_HOURS_IL:
-        return f"{t.strftime('%Y-%m-%d')}-{t.hour:02d}"
-    return None
-
 def in_send_window():
-    """
-    Allow send if hour is 07 or 19 (Israel time).
-    No minute restriction - we rely on last_sent_key to avoid duplicates.
-    """
-    t = now_il()
-    return (t.hour in SEND_HOURS_IL), t
+    now_il = datetime.now(IL_TZ)
+    return now_il.hour in SEND_HOURS_IL, now_il
 
 def is_manual_run():
     return (os.getenv("GITHUB_EVENT_NAME") or "").strip() == "workflow_dispatch"
@@ -132,7 +112,6 @@ def scrape_products(page_html: str, base_url: str):
         title_el = p.select_one(".product-item-link") or p.select_one("a")
         if not title_el:
             continue
-
         title = title_el.get_text(strip=True)
 
         href = title_el.get("href") or ""
@@ -147,14 +126,21 @@ def scrape_products(page_html: str, base_url: str):
         img = ""
         if img_el:
             img = img_el.get("data-src") or img_el.get("src") or ""
-            if img.startswith("//"):
+            if img and img.startswith("//"):
                 img = "https:" + img
 
         price_el = p.select_one(".price") or p.select_one(".special-price") or p.select_one("[data-price-amount]")
         price_text = price_el.get_text(" ", strip=True) if price_el else ""
 
         uid = link
-        items.append({"id": uid, "title": title, "price": price_text, "link": link, "img": img})
+
+        items.append({
+            "id": uid,
+            "title": title,
+            "price": price_text,
+            "link": link,
+            "img": img,
+        })
 
     seen = set()
     out = []
@@ -174,21 +160,15 @@ def fetch_url_html(playwright, url: str):
     browser.close()
     return html
 
-def check_and_send_for_user(pw, user_id: str, u: dict, global_state: dict, shoes_size_map: dict, apparel_size_map: dict, send_key: str, manual: bool):
+def check_and_send_for_user(pw, user_id: str, u: dict, global_state: dict, shoes_size_map: dict, apparel_size_map: dict):
     chat_id = u.get("chat_id")
     if not isinstance(chat_id, int):
+        log(f"Skip user {user_id}: invalid chat_id")
         return
 
     if u.get("state") != "ready":
+        log(f"Skip user {user_id}: state={u.get('state')}")
         return
-
-    st = global_state.get(user_id, {})
-
-    # prevent duplicates in the same window for scheduled runs
-    if not manual and send_key:
-        if st.get("last_sent_key") == send_key:
-            log(f"User {user_id}: already sent in window {send_key}, skipping.")
-            return
 
     gender = u.get("gender")
     category = u.get("category")
@@ -203,6 +183,8 @@ def check_and_send_for_user(pw, user_id: str, u: dict, global_state: dict, shoes
             url = build_shoes_url(gender, str(shoe_size), price_min, price_max, shoes_size_map)
             if url:
                 urls.append(("shoes", url))
+            else:
+                log(f"User {user_id}: could not build shoes url (gender={gender}, shoe_size={shoe_size})")
 
     if category in ("clothing", "both"):
         clothing_size = u.get("clothing_size")
@@ -210,12 +192,15 @@ def check_and_send_for_user(pw, user_id: str, u: dict, global_state: dict, shoes
             url = build_clothing_url(gender, str(clothing_size), price_min, price_max, apparel_size_map)
             if url:
                 urls.append(("clothing", url))
+            else:
+                log(f"User {user_id}: could not build clothing url (gender={gender}, clothing_size={clothing_size})")
 
     if not urls:
         send_message(chat_id, "❌ אין אפשרות לבנות URL מההגדרות שלך. נסה /reset והגדרה מחדש.")
         return
 
-    sent_ids = set(st.get("sent_ids", []))
+    user_state = global_state.get(user_id, {})
+    sent_ids = set(user_state.get("sent_ids", []))
 
     total_found = 0
     total_new = 0
@@ -238,15 +223,9 @@ def check_and_send_for_user(pw, user_id: str, u: dict, global_state: dict, shoes
 
             sent_ids.add(it["id"])
             total_new += 1
-            time.sleep(0.4)
+            time.sleep(0.5)
 
-    new_state = global_state.get(user_id, {})
-    new_state["sent_ids"] = list(sent_ids)
-
-    if not manual and send_key:
-        new_state["last_sent_key"] = send_key
-
-    global_state[user_id] = new_state
+    global_state[user_id] = {"sent_ids": list(sent_ids)}
 
     if total_found == 0:
         send_message(chat_id, "לא נמצאו פריטים לפי ההגדרות שלך כרגע.")
@@ -259,18 +238,17 @@ def main():
 
     log("Starting checker...")
 
-    allowed, t = in_send_window()
+    allowed, now_il = in_send_window()
     manual = is_manual_run()
 
     if not allowed and not manual:
-        log(f"Not in send window, IL time is {t.strftime('%H:%M')}, skipping checker scan.")
+        log(f"Not in send window, IL time is {now_il.strftime('%H:%M')}, skipping checker scan.")
         return
 
-    send_key = current_send_key()
     if manual:
         log("Checker allowed: manual run")
     else:
-        log(f"Checker allowed: send window {t.strftime('%H:%M')} (key={send_key})")
+        log(f"Checker allowed: send window {now_il.strftime('%H:%M')}")
 
     user_data = load_json(USER_DATA_FILE, {})
     log(f"user_data loaded keys: {list(user_data.keys())}")
@@ -280,12 +258,13 @@ def main():
         return
 
     global_state = load_json(STATE_FILE, {})
+
     shoes_size_map = load_json(SHOES_SIZE_MAP_FILE, {})
     apparel_size_map = load_json(APPAREL_SIZE_MAP_FILE, {})
 
     with sync_playwright() as pw:
         for user_id, u in user_data.items():
-            check_and_send_for_user(pw, user_id, u, global_state, shoes_size_map, apparel_size_map, send_key, manual)
+            check_and_send_for_user(pw, user_id, u, global_state, shoes_size_map, apparel_size_map)
 
     save_json(STATE_FILE, global_state)
     log("Checker done.")
