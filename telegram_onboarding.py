@@ -17,26 +17,26 @@ ENABLE_DEBUG_LOGS = True
 MAX_MESSAGE_AGE_SECONDS = 24 * 60 * 60  # 24 hours instead of 15 minutes
 
 WELCOME_TEXT = (
-    "馃憻 讘专讜讱 讛讘讗 诇讘讜讟 讟讬诪讘专诇谞讚\n\n"
-    "讻讚讬 诇讛讙讚讬专 诪注拽讘 诪讜转讗诐 讗讬砖讬转 讘讛讜讚注讛 讗讞转, 砖诇讞讜 诇讘讜讟 讛讜讚注讛 讘驻讜专诪讟 讛讘讗:\n\n"
+    "Welcome to Timberland Bot\n\n"
+    "To set up personalized tracking, send a message in this format:\n\n"
     "<gender> <type> <size> <min_price> <max_price>\n\n"
-    "拽讬讚讜讚讬诐\n"
+    "Codes:\n"
     "gender:\n"
-    "1 - 讙讘专讬诐\n"
-    "2 - 谞砖讬诐\n"
-    "3 - 讬诇讚讬诐\n\n"
+    "1 - Men\n"
+    "2 - Women\n"
+    "3 - Kids\n\n"
     "type:\n"
-    "A - 讛谞注诇讛\n"
-    "B - 讘讬讙讜讚\n"
-    "C - 讙诐 讜讙诐\n\n"
-    "讚讜讙诪讛\n"
+    "A - Shoes\n"
+    "B - Clothing\n"
+    "C - Both\n\n"
+    "Example:\n"
     "1 A 43 128 299\n\n"
-    "砖讬诐 诇讘 诇讙讘讬 C (讙诐 讜讙诐)\n"
-    "讻讚讬 砖诇讗 谞砖讘讜专 诪讬讚讜转 砖讜谞讜转, 砖诇讞 诪讬讚讛 讘驻讜专诪讟 shoeSize/clothingSize\n"
-    "诇讚讜讙诪讛:\n"
+    "Note for C (both):\n"
+    "Use format shoeSize/clothingSize\n"
+    "Example:\n"
     "2 C 40/L 0 800\n\n"
-    "馃晼 砖注讜转 砖诇讬讞转 诪讜爪专讬诐 (砖注讜谉 讬砖专讗诇):\n"
-    "07:00 讜-19:00"
+    "Products sent twice daily (Israel time):\n"
+    "07:00 and 19:00"
 )
 
 def log(msg: str):
@@ -143,14 +143,14 @@ def handle_message(chat_id: int, text: str, user_data: dict):
     # Commands
     if text == "/reset":
         user_data[str(chat_id)] = {"chat_id": chat_id, "state": "awaiting_setup", "welcome_sent": False}
-        send_message(chat_id, "鉁?讘讜爪注 讗讬驻讜住. 砖诇讞 /start 讜讗讝 讗转 讛讛讜讚注讛 讘驻讜专诪讟 讛谞讻讜谉.")
+        send_message(chat_id, "Reset completed. Send /start and then your setup message.")
         return
 
     if text == "/stat":
         total = len(user_data)
         ready = sum(1 for v in user_data.values() if v.get("state") == "ready")
         awaiting = total - ready
-        send_message(chat_id, f"馃搳 住讟讟讜住 讘讜讟\n\nTotal users: {total}\nReady: {ready}\nAwaiting setup: {awaiting}")
+        send_message(chat_id, f"Bot Status\n\nTotal users: {total}\nReady: {ready}\nAwaiting setup: {awaiting}")
         return
 
     if text == "/start":
@@ -164,10 +164,10 @@ def handle_message(chat_id: int, text: str, user_data: dict):
         if user.get("state") != "ready":
             send_message(
                 chat_id,
-                "鉂?驻讜专诪讟 诇讗 转拽讬谉.\n\n"
-                "讚讜讙诪讛: 1 A 43 128 299\n"
-                "讚讜讙诪讛 诇-C: 2 C 40/L 0 800\n"
-                "讗驻砖专 诇砖诇讜讞 /start 讻讚讬 诇专讗讜转 砖讜讘 讗转 讛讛讜专讗讜转."
+                "Invalid format.\n\n"
+                "Example: 1 A 43 128 299\n"
+                "Example for C: 2 C 40/L 0 800\n"
+                "Send /start to see instructions again."
             )
         return
 
@@ -186,23 +186,23 @@ def handle_message(chat_id: int, text: str, user_data: dict):
 
     log(f"User {chat_id} registered: {parsed}")
 
-    gender_label = {"men": "讙讘专讬诐", "women": "谞砖讬诐", "kids": "讬诇讚讬诐"}[parsed["gender"]]
-    category_label = {"shoes": "讛谞注诇讛", "clothing": "讘讬讙讜讚", "both": "讙诐 讜讙诐"}[parsed["category"]]
+    gender_label = {"men": "Men", "women": "Women", "kids": "Kids"}[parsed["gender"]]
+    category_label = {"shoes": "Shoes", "clothing": "Clothing", "both": "Both"}[parsed["category"]]
 
     lines = [
-        "鉁?讛讙讚专讜转 谞砖诪专讜 讘讛爪诇讞讛!",
+        "Settings saved successfully!",
         "",
-        f"诪讙讚专: {gender_label}",
-        f"住讜讙 诪讜爪专: {category_label}",
+        f"Gender: {gender_label}",
+        f"Category: {category_label}",
     ]
     if parsed["category"] in ("shoes", "both"):
-        lines.append(f"诪讬讚讛 谞注诇讬讬诐: {parsed['shoes_size']}")
+        lines.append(f"Shoe size: {parsed['shoes_size']}")
     if parsed["category"] in ("clothing", "both"):
-        lines.append(f"诪讬讚讛 讘讬讙讜讚: {parsed['clothing_size']}")
+        lines.append(f"Clothing size: {parsed['clothing_size']}")
     lines += [
-        f"讟讜讜讞 诪讞讬专讬诐: {parsed['price_min']} - {parsed['price_max']} 鈧?,
+        f"Price range: {parsed['price_min']} - {parsed['price_max']} NIS",
         "",
-        "馃晼 诪讜爪专讬诐 谞砖诇讞讬诐 驻注诪讬讬诐 讘讬讜诐 (砖注讜谉 讬砖专讗诇): 07:00 讜-19:00",
+        "Products sent twice daily (Israel time): 07:00 and 19:00",
     ]
     send_message(chat_id, "\n".join(lines))
 
