@@ -1,4 +1,4 @@
-# telegram_onboarding.py - SIMPLE WORKING VERSION
+# telegram_onboarding.py
 import json
 import os
 import re
