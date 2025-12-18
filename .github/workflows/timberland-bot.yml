@@ -23,8 +23,19 @@ jobs:
       - name: Init state files if missing
         run: |
           if [ ! -f user_data.json ]; then echo "{}" > user_data.json; fi
-          if [ ! -f state.json ]; then echo "{}" > state.json; fi
+          if [ ! -f shoes_state.json ]; then echo "{}" > shoes_state.json; fi
           if [ ! -f last_update_id.json ]; then echo '{"last_update_id":0}' > last_update_id.json; fi
+
+      - name: Debug - list state files (after download/init)
+        run: |
+          echo "PWD: $(pwd)"
+          ls -la
+          echo "--- user_data.json ---"
+          if [ -f user_data.json ]; then cat user_data.json; else echo "MISSING"; fi
+          echo "--- last_update_id.json ---"
+          if [ -f last_update_id.json ]; then cat last_update_id.json; else echo "MISSING"; fi
+          echo "--- shoes_state.json ---"
+          if [ -f shoes_state.json ]; then cat shoes_state.json; else echo "MISSING"; fi
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -42,6 +53,13 @@ jobs:
         run: |
           python telegram_onboarding.py
 
+      - name: Debug - list state files (after onboarding)
+        run: |
+          echo "--- user_data.json after onboarding ---"
+          if [ -f user_data.json ]; then cat user_data.json; else echo "MISSING"; fi
+          echo "--- last_update_id.json after onboarding ---"
+          if [ -f last_update_id.json ]; then cat last_update_id.json; else echo "MISSING"; fi
+
       - name: Run Timberland checker
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
@@ -55,4 +73,4 @@ jobs:
           path: |
             user_data.json
             last_update_id.json
-            state.json
+            shoes_state.json
