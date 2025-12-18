@@ -7,6 +7,7 @@ from datetime import datetime, timezone, timedelta
 
 from bs4 import BeautifulSoup
 from playwright.sync_api import sync_playwright
+from coupon_fetcher import get_coupons
 
 USER_DATA_FILE = "user_data.json"
 STATE_FILE = "shoes_state.json"
@@ -196,7 +197,7 @@ def check_and_send_for_user(pw, user_id: str, u: dict, global_state: dict, shoes
                 log(f"User {user_id}: could not build clothing url (gender={gender}, clothing_size={clothing_size})")
 
     if not urls:
-        send_message(chat_id, "❌ אין אפשרות לבנות URL מההגדרות שלך. נסה /reset והגדרה מחדש.")
+        send_message(chat_id, "❌ Cannot build URL from your settings. Try /reset and setup again.")
         return
 
     user_state = global_state.get(user_id, {})
@@ -227,10 +228,25 @@ def check_and_send_for_user(pw, user_id: str, u: dict, global_state: dict, shoes
 
     global_state[user_id] = {"sent_ids": list(sent_ids)}
 
+    # Send coupons after products
+    try:
+        coupons = get_coupons(max_items=3)
+        if coupons:
+            coupon_text = "💰 DISCOUNT COUPONS:\n\n"
+            for coupon in coupons:
+                if coupon.get("code"):
+                    coupon_text += f"🎫 Code: {coupon['code']}\n"
+                coupon_text += f"📝 {coupon.get('title', 'Discount offer')}\n"
+                coupon_text += f"🔗 {coupon.get('url', '')}\n\n"
+            
+            send_message(chat_id, coupon_text)
+    except Exception as e:
+        log(f"Error fetching coupons: {e}")
+    
     if total_found == 0:
-        send_message(chat_id, "לא נמצאו פריטים לפי ההגדרות שלך כרגע.")
+        send_message(chat_id, "No items found matching your criteria right now.")
     else:
-        send_message(chat_id, f"סיכום: נמצאו {total_found} פריטים. נשלחו {total_new} חדשים.")
+        send_message(chat_id, f"Summary: Found {total_found} items. Sent {total_new} new ones.")
 
 def main():
     if not TELEGRAM_BOT_TOKEN:
