@@ -13,8 +13,11 @@ API = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
 
 ENABLE_DEBUG_LOGS = True
 
-# FIXED: Increased message age limit to 24 hours
-MAX_MESSAGE_AGE_SECONDS = 24 * 60 * 60  # 24 hours instead of 15 minutes
+# Message age limit - only process recent messages on first run
+MAX_MESSAGE_AGE_SECONDS = 10 * 60  # 10 minutes for first run, then all messages
+
+# Message age limit - only process recent messages on first run
+MAX_MESSAGE_AGE_SECONDS = 10 * 60  # 10 minutes for first run, then all messages
 
 WELCOME_TEXT = (
     "Welcome to Timberland Bot\n\n"
@@ -56,19 +59,23 @@ def save_json(path: str, data):
     try:
         with open(path, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
-    except Exception:
-        pass
+    except (OSError, PermissionError, json.JSONEncodeError) as e:
+        log(f"Error saving {path}: {e}")
 
 def send_message(chat_id: int, text: str):
     url = f"{API}/sendMessage"
     payload = {
         "chat_id": chat_id,
-        "text": text,
+        "text": text[:4096],  # Telegram message limit
         "disable_web_page_preview": True,
     }
-    r = requests.post(url, data=payload, timeout=30)
-    log(f"send_message to {chat_id} -> status {r.status_code}")
-    return r
+    try:
+        r = requests.post(url, data=payload, timeout=30)
+        log(f"send_message to {chat_id} -> status {r.status_code}")
+        return r
+    except requests.exceptions.RequestException as e:
+        log(f"Error sending message to {chat_id}: {e}")
+        return None
 
 def parse_one_line(text: str):
     parts = text.strip().split()
@@ -98,7 +105,7 @@ def parse_one_line(text: str):
     clothing_size = None
 
     if category == "shoes":
-        if not re.fullmatch(r"\d{2}", size_raw):
+        if not re.fullmatch(r"\d{1,2}", size_raw):
             return None
         shoes_size = size_raw
 
@@ -114,7 +121,7 @@ def parse_one_line(text: str):
         a, b = size_raw.split("/", 1)
         a = a.strip()
         b = b.strip().upper()
-        if not re.fullmatch(r"\d{2}", a):
+        if not re.fullmatch(r"\d{1,2}", a):
             return None
         if b not in ("XS", "S", "M", "L", "XL", "XXL", "XXXL"):
             return None
@@ -270,31 +277,10 @@ def main():
     
     log(f"Starting with last_update_id: {last_update}")
     
-    # If this is first run (last_update is very high), get current updates to set proper baseline
-    if last_update >= 999999999:
-        log("First run detected - setting baseline from current updates")
-        try:
-            current_updates = get_updates(0)
-            if current_updates:
-                max_current = max(upd.get("update_id", 0) for upd in current_updates)
-                # Set baseline but allow processing of very recent messages (last 5 minutes)
-                baseline_time = int(time.time()) - 300  # 5 minutes ago
-                recent_updates = [upd for upd in current_updates 
-                                if upd.get("message", {}).get("date", 0) > baseline_time]
-                
-                if recent_updates:
-                    log(f"Found {len(recent_updates)} recent messages to process")
-                    last_update = min(upd.get("update_id", 0) for upd in recent_updates) - 1
-                else:
-                    last_update = max_current
-                
-                save_json(LAST_UPDATE_ID_FILE, {"last_update_id": last_update})
-                log(f"Set baseline last_update_id to {last_update}")
-            else:
-                last_update = 0
-        except Exception as e:
-            log(f"Error setting baseline: {e}")
-            last_update = 0
+    # Simple approach: if last_update is 0, only process very recent messages
+    if last_update == 0:
+        log("First run - will only process recent messages (last 10 minutes)")
+        # This will be handled by the age check below
 
     # Get all updates
     updates = get_updates(last_update + 1)
@@ -359,13 +345,8 @@ def main():
     if processed_count == 0:
         log("No messages were processed - likely all were duplicates or too old")
     
-    # Force save to ensure state persists
-    try:
-        with open(LAST_UPDATE_ID_FILE, "w", encoding="utf-8") as f:
-            json.dump({"last_update_id": max_update_id}, f)
-        log(f"Force saved last_update_id: {max_update_id}")
-    except Exception as e:
-        log(f"Error force saving last_update_id: {e}")
+    # Force save already handled by save_json above
+    log(f"State saved with last_update_id: {max_update_id}")
 
 if __name__ == "__main__":
     main()
