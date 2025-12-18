@@ -270,19 +270,29 @@ def main():
 
     # Get all updates
     updates = get_updates(last_update + 1)
-    log(f"getUpdates returned {len(updates)} updates")
+    log(f"getUpdates returned {len(updates)} updates (last_update_id: {last_update})")
 
     if not updates:
         log("No new updates to process")
         return
     
-    # Debug: show update IDs being processed
-    update_ids = [upd.get("update_id") for upd in updates]
-    log(f"Processing update IDs: {update_ids}")
+    # Filter out old updates that we might have already processed
+    new_updates = [upd for upd in updates if upd.get("update_id", 0) > last_update]
+    
+    if not new_updates:
+        log("All updates were already processed")
+        # Still update the max_update_id to prevent reprocessing
+        max_update_id = max(upd.get("update_id", 0) for upd in updates)
+        save_json(LAST_UPDATE_ID_FILE, {"last_update_id": max_update_id})
+        return
+    
+    log(f"Processing {len(new_updates)} new updates")
+    updates = new_updates  # Use only new updates
 
     # Process all messages (not just newest per chat)
     max_update_id = last_update
     now_ts = int(time.time())
+    processed_count = 0
 
     for upd in updates:
         uid = upd.get("update_id")
@@ -303,19 +313,23 @@ def main():
                 log(f"Skipping old message from {chat_id} (age: {now_ts - msg_date}s)")
                 continue
         
-        # Skip if we've already processed this exact update
+        # Skip if we've already processed this exact update (double check)
         if uid and uid <= last_update:
-            log(f"Skipping already processed update {uid}")
+            log(f"Skipping already processed update {uid} (last_update: {last_update})")
             continue
 
         text = msg.get("text", "")
         handle_message(chat_id, text, user_data)
+        processed_count += 1
 
     save_json(USER_DATA_FILE, user_data)
     save_json(LAST_UPDATE_ID_FILE, {"last_update_id": max_update_id})
-    log(f"Onboarding done. Processed {len(updates)} updates")
+    log(f"Onboarding done. Processed {processed_count} messages from {len(updates)} updates")
     log(f"Updated last_update_id from {last_update} to {max_update_id}")
     log(f"Total users: {len(user_data)}")
+    
+    if processed_count == 0:
+        log("No messages were processed - likely all were duplicates or too old")
     
     # Force save to ensure state persists
     try:
