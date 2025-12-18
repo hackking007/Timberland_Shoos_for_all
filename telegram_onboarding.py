@@ -267,6 +267,24 @@ def main():
     last_update = last_obj.get("last_update_id")
     if not isinstance(last_update, int):
         last_update = 0
+    
+    log(f"Starting with last_update_id: {last_update}")
+    
+    # If this is first run (last_update is very high), get current updates to set proper baseline
+    if last_update >= 999999999:
+        log("First run detected - setting baseline from current updates")
+        try:
+            current_updates = get_updates(0)
+            if current_updates:
+                max_current = max(upd.get("update_id", 0) for upd in current_updates)
+                last_update = max_current
+                save_json(LAST_UPDATE_ID_FILE, {"last_update_id": last_update})
+                log(f"Set baseline last_update_id to {last_update}")
+                return  # Skip processing on first run
+            else:
+                last_update = 0
+        except:
+            last_update = 0
 
     # Get all updates
     updates = get_updates(last_update + 1)
