@@ -300,8 +300,13 @@ def main():
         msg_date = msg.get("date")
         if isinstance(msg_date, int):
             if now_ts - msg_date > MAX_MESSAGE_AGE_SECONDS:
-                log(f"Skipping old message from {chat_id}")
+                log(f"Skipping old message from {chat_id} (age: {now_ts - msg_date}s)")
                 continue
+        
+        # Skip if we've already processed this exact update
+        if uid and uid <= last_update:
+            log(f"Skipping already processed update {uid}")
+            continue
 
         text = msg.get("text", "")
         handle_message(chat_id, text, user_data)
