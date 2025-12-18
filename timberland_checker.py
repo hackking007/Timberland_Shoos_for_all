@@ -8,7 +8,7 @@ from datetime import datetime, timezone, timedelta
 from bs4 import BeautifulSoup
 from playwright.sync_api import sync_playwright
 from coupon_fetcher import get_coupons
-from smart_alerts import process_smart_alerts, get_price_history_summary, generate_share_link
+from smart_alerts import process_smart_alerts, get_price_history_summary, generate_share_link, extract_price
 
 USER_DATA_FILE = "user_data.json"
 STATE_FILE = "shoes_state.json"
@@ -203,6 +203,9 @@ def check_and_send_for_user(pw, user_id: str, u: dict, global_state: dict, shoes
 
     user_state = global_state.get(user_id, {})
     sent_ids = set(user_state.get("sent_ids", []))
+    
+    # Debug: show current state
+    log(f"User {user_id}: loaded {len(sent_ids)} previously sent items")
 
     total_found = 0
     total_new = 0
@@ -217,8 +220,12 @@ def check_and_send_for_user(pw, user_id: str, u: dict, global_state: dict, shoes
         all_items.extend(items)  # Add to smart alerts processing
 
         for it in items:
+            # Debug: check if item was sent before
             if it["id"] in sent_ids:
+                log(f"User {user_id}: skipping already sent item {it['id'][:50]}...")
                 continue
+            
+            log(f"User {user_id}: sending new item {it['id'][:50]}...")
 
             # Check if this is a price alert
             current_price = extract_price(it.get("price", ""))
@@ -252,7 +259,11 @@ def check_and_send_for_user(pw, user_id: str, u: dict, global_state: dict, shoes
     # Smart alerts are now integrated into individual product messages
     # No separate alert processing needed
 
+    # Save updated state for this user
     global_state[user_id] = {"sent_ids": list(sent_ids)}
+    
+    # Debug: show what was saved
+    log(f"User {user_id}: saved {len(sent_ids)} sent_ids to state")
 
     # Send coupons after products
     try:
@@ -271,6 +282,8 @@ def check_and_send_for_user(pw, user_id: str, u: dict, global_state: dict, shoes
     
     if total_found == 0:
         send_message(chat_id, "No items found matching your criteria right now.")
+    elif total_new == 0:
+        send_message(chat_id, f"Found {total_found} items, but all were already sent before.")
     else:
         send_message(chat_id, f"Summary: Found {total_found} items. Sent {total_new} new ones.")
 
@@ -309,6 +322,10 @@ def main():
             check_and_send_for_user(pw, user_id, u, global_state, shoes_size_map, apparel_size_map)
 
     save_json(STATE_FILE, global_state)
+    
+    # Debug: show final state
+    total_tracked = sum(len(user_state.get("sent_ids", [])) for user_state in global_state.values())
+    log(f"Checker done. Total tracked items across all users: {total_tracked}")
     log("Checker with smart alerts done.")
 
 if __name__ == "__main__":
