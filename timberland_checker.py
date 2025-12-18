@@ -37,22 +37,59 @@ def load_json(path: str, default):
         return default
 
 def save_json(path: str, data):
+    import tempfile
+    import shutil
+    
     try:
-        with open(path, "w", encoding="utf-8") as f:
+        # Write to temporary file first
+        temp_path = path + ".tmp"
+        with open(temp_path, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
-    except Exception:
-        pass
+        
+        # Atomic move to final location
+        shutil.move(temp_path, path)
+        log(f"Successfully saved {path}")
+        
+    except Exception as e:
+        log(f"Error saving {path}: {e}")
+        # Try to clean up temp file
+        try:
+            if os.path.exists(path + ".tmp"):
+                os.remove(path + ".tmp")
+        except:
+            pass
 
-def send_message(chat_id: int, text: str):
+def send_message(chat_id: int, text: str, retry_count=0):
+    if retry_count > 3:
+        log(f"Max retries reached for message to {chat_id}")
+        return None
+        
     url = f"{API}/sendMessage"
     payload = {
         "chat_id": chat_id,
-        "text": text,
+        "text": text[:4096],  # Telegram message limit
         "disable_web_page_preview": True,
     }
-    r = requests.post(url, data=payload, timeout=30)
-    log(f"send_message -> {r.status_code}")
-    return r
+    
+    try:
+        r = requests.post(url, data=payload, timeout=30)
+        
+        if r.status_code == 429:  # Rate limited
+            retry_after = int(r.headers.get('Retry-After', 60))
+            log(f"Rate limited, waiting {retry_after} seconds")
+            time.sleep(min(retry_after, 60))  # Max 60 seconds wait
+            return send_message(chat_id, text, retry_count + 1)
+        
+        log(f"send_message -> {r.status_code}")
+        return r
+        
+    except requests.exceptions.Timeout:
+        log(f"Timeout sending message to {chat_id}, retrying...")
+        time.sleep(5)
+        return send_message(chat_id, text, retry_count + 1)
+    except Exception as e:
+        log(f"Error sending message to {chat_id}: {e}")
+        return None
 
 def send_photo(chat_id: int, photo_url: str, caption: str):
     url = f"{API}/sendPhoto"
@@ -154,13 +191,23 @@ def scrape_products(page_html: str, base_url: str):
     return out
 
 def fetch_url_html(playwright, url: str):
-    browser = playwright.chromium.launch(headless=True)
-    page = browser.new_page()
-    page.goto(url, wait_until="domcontentloaded", timeout=60000)
-    page.wait_for_timeout(2000)
-    html = page.content()
-    browser.close()
-    return html
+    browser = None
+    try:
+        browser = playwright.chromium.launch(headless=True)
+        page = browser.new_page()
+        page.goto(url, wait_until="domcontentloaded", timeout=60000)
+        page.wait_for_timeout(2000)
+        html = page.content()
+        return html
+    except Exception as e:
+        log(f"Error fetching URL {url}: {e}")
+        return ""
+    finally:
+        if browser:
+            try:
+                browser.close()
+            except:
+                pass
 
 def check_and_send_for_user(pw, user_id: str, u: dict, global_state: dict, shoes_size_map: dict, apparel_size_map: dict):
     chat_id = u.get("chat_id")
@@ -254,7 +301,15 @@ def check_and_send_for_user(pw, user_id: str, u: dict, global_state: dict, shoes
 
             sent_ids.add(it["id"])
             total_new += 1
-            time.sleep(0.5)
+            
+            # Prevent overwhelming Telegram API
+            time.sleep(1)  # Increased from 0.5 to 1 second
+            
+            # Limit products per user per run
+            if total_new >= 20:
+                log(f"User {user_id}: Reached max products limit (20), stopping")
+                send_message(chat_id, "⚠️ Found many products! Showing first 20. More will be sent in next scan.")
+                break
     
     # Smart alerts are now integrated into individual product messages
     # No separate alert processing needed
