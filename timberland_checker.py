@@ -327,12 +327,7 @@ def check_and_send_for_user(pw, user_id: str, u: dict, global_state: dict, shoes
     except Exception as e:
         log(f"Error fetching live coupons: {e}")
     
-    if total_found == 0:
-        send_message(chat_id, "No items found matching your criteria right now.")
-    elif total_new == 0:
-        send_message(chat_id, f"Found {total_found} items, but all were already sent before.")
-    else:
-        send_message(chat_id, f"Summary: Found {total_found} items. Sent {total_new} new ones.")
+    # Remove summary message - not needed
 
 def main():
     if not TELEGRAM_BOT_TOKEN:
