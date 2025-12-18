@@ -81,3 +81,5 @@ jobs:
             last_update_id.json
             shoes_state.json
             coupons_cache.json
+            price_history.json
+            stock_alerts.json
