@@ -153,6 +153,47 @@ def handle_message(chat_id: int, text: str, user_data: dict):
         send_message(chat_id, f"Bot Status\n\nTotal users: {total}\nReady: {ready}\nAwaiting setup: {awaiting}")
         return
 
+    if text == "/help":
+        help_text = (
+            "馃 Bot Commands:\n\n"
+            "/start - Setup instructions\n"
+            "/reset - Reset your preferences\n"
+            "/stat - Bot statistics\n"
+            "/alerts - Manage price alerts\n"
+            "/share_XXXXX - Share product with friends\n\n"
+            "馃搳 Smart Features:\n"
+            "鈥?Price history tracking\n"
+            "鈥?Lowest price alerts\n"
+            "鈥?Stock notifications\n"
+            "鈥?Product sharing"
+        )
+        send_message(chat_id, help_text)
+        return
+    
+    if text == "/alerts":
+        alerts_text = (
+            "馃敂 Smart Alerts Active:\n\n"
+            "馃搲 Price tracking - Get notified when prices drop\n"
+            "馃搳 Price history - See lowest/highest prices\n"
+            "馃摝 Stock alerts - Know when items restock\n"
+            "馃挕 Share products - Send deals to friends\n\n"
+            "All alerts are automatic based on your preferences!"
+        )
+        send_message(chat_id, alerts_text)
+        return
+    
+    if text.startswith("/share_"):
+        product_id = text.replace("/share_", "")
+        share_text = (
+            "馃摛 Share this product:\n\n"
+            "Copy and send this message to your friends:\n\n"
+            "馃憻 Check out this Timberland deal I found!\n"
+            f"馃敆 Product ID: {product_id}\n\n"
+            "馃 Get your own alerts: @YourTimberlandBot"
+        )
+        send_message(chat_id, share_text)
+        return
+
     if text == "/start":
         send_message(chat_id, WELCOME_TEXT)
         user["welcome_sent"] = True
