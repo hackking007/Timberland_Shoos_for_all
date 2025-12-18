@@ -14,20 +14,30 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Download previous state (if exists)
+        id: download-state
         uses: actions/download-artifact@v4
         with:
           name: timberland-state
           path: .
         continue-on-error: true
+        
+      - name: Check if state was downloaded
+        run: |
+          if [ "${{ steps.download-state.outcome }}" = "failure" ]; then
+            echo "No previous state found - this is normal for first run"
+          else
+            echo "Previous state downloaded successfully"
+          fi
 
       - name: Init state files if missing
         run: |
           if [ ! -f user_data.json ]; then echo "{}" > user_data.json; fi
           if [ ! -f shoes_state.json ]; then echo "{}" > shoes_state.json; fi
           if [ ! -f last_update_id.json ]; then 
-            # Start with 0 to process recent messages
-            echo '{"last_update_id":0}' > last_update_id.json
-            echo "Created last_update_id.json"
+            # Get current timestamp and subtract 1 hour to catch recent messages
+            RECENT_TIME=$(($(date +%s) - 3600))
+            echo "{\"last_update_id\":0,\"init_time\":$RECENT_TIME}" > last_update_id.json
+            echo "Created last_update_id.json with recent timestamp"
           fi
           if [ ! -f price_history.json ]; then echo "{}" > price_history.json; fi
           if [ ! -f stock_alerts.json ]; then echo "{}" > stock_alerts.json; fi
