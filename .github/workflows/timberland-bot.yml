@@ -25,9 +25,9 @@ jobs:
           if [ ! -f user_data.json ]; then echo "{}" > user_data.json; fi
           if [ ! -f shoes_state.json ]; then echo "{}" > shoes_state.json; fi
           if [ ! -f last_update_id.json ]; then 
-            # Get current update_id to avoid processing old messages
+            # Start with 0 but the code will handle first run properly
             echo '{"last_update_id":999999999}' > last_update_id.json
-            echo "Created last_update_id.json with high value to skip old messages"
+            echo "Created last_update_id.json - first run will set proper baseline"
           fi
           if [ ! -f price_history.json ]; then echo "{}" > price_history.json; fi
           if [ ! -f stock_alerts.json ]; then echo "{}" > stock_alerts.json; fi
