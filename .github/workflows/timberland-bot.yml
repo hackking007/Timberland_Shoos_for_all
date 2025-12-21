@@ -1,102 +1,39 @@
-name: Timberland Bot
+name: Product Tracker Scan
 
 on:
   schedule:
-    - cron: "*/30 * * * *"
-  workflow_dispatch:
+    # Run twice daily at 8 AM and 8 PM UTC
+    - cron: '0 8,20 * * *'
+  workflow_dispatch: # Allow manual trigger
 
 jobs:
-  run-bot:
+  scan:
     runs-on: ubuntu-latest
-
+    
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Download previous state (if exists)
-        id: download-state
-        uses: actions/download-artifact@v4
-        with:
-          name: timberland-state
-          path: .
-        continue-on-error: true
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.9'
         
-      - name: Check if state was downloaded
-        run: |
-          if [ "${{ steps.download-state.outcome }}" = "failure" ]; then
-            echo "No previous state found - this is normal for first run"
-          else
-            echo "Previous state downloaded successfully"
-          fi
-
-      - name: Init state files if missing
-        run: |
-          if [ ! -f user_data.json ]; then echo "{}" > user_data.json; fi
-          if [ ! -f shoes_state.json ]; then echo "{}" > shoes_state.json; fi
-          if [ ! -f last_update_id.json ]; then 
-            # Get current timestamp and subtract 1 hour to catch recent messages
-            RECENT_TIME=$(($(date +%s) - 3600))
-            echo "{\"last_update_id\":0,\"init_time\":$RECENT_TIME}" > last_update_id.json
-            echo "Created last_update_id.json with recent timestamp"
-          fi
-          if [ ! -f price_history.json ]; then echo "{}" > price_history.json; fi
-          if [ ! -f stock_alerts.json ]; then echo "{}" > stock_alerts.json; fi
-          if [ ! -f coupons_cache.json ]; then echo "{}" > coupons_cache.json; fi
-
-      - name: Debug - list state files (after download/init)
-        run: |
-          echo "PWD: $(pwd)"
-          ls -la
-          echo "--- user_data.json ---"
-          if [ -f user_data.json ]; then cat user_data.json; else echo "MISSING"; fi
-          echo "--- last_update_id.json ---"
-          if [ -f last_update_id.json ]; then cat last_update_id.json; else echo "MISSING"; fi
-          echo "--- shoes_state.json ---"
-          if [ -f shoes_state.json ]; then cat shoes_state.json; else echo "MISSING"; fi
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Install dependencies
-        run: |
-          pip install -r requirements.txt
-          playwright install chromium
-
-      - name: Run Telegram onboarding
-        env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-        run: |
-          python telegram_onboarding.py
-
-      - name: Auto-manage users
-        env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-        run: |
-          python auto_user_manager.py
-
-      - name: Debug - list state files (after onboarding)
-        run: |
-          echo "--- user_data.json after onboarding ---"
-          if [ -f user_data.json ]; then cat user_data.json; else echo "MISSING"; fi
-          echo "--- last_update_id.json after onboarding ---"
-          if [ -f last_update_id.json ]; then cat last_update_id.json; else echo "MISSING"; fi
-
-      - name: Run Timberland checker
-        env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-        run: |
-          python timberland_checker.py
-
-      - name: Upload updated state files
-        uses: actions/upload-artifact@v4
-        with:
-          name: timberland-state
-          path: |
-            user_data.json
-            last_update_id.json
-            shoes_state.json
-            coupons_cache.json
-            price_history.json
-            stock_alerts.json
+    - name: Install dependencies
+      run: |
+        pip install -r requirements.txt
+        
+    - name: Run product scan
+      env:
+        TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+      run: |
+        cd bot
+        python scheduler_runner.py
+        
+    - name: Commit updated user data
+      run: |
+        git config --local user.email "action@github.com"
+        git config --local user.name "GitHub Action"
+        git add bot/data/user_data.json
+        git diff --staged --quiet || git commit -m "Update user data after scan"
+        git push
